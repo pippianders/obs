@@ -1,9 +1,9 @@
 #pragma once
 
 #include <obs-module.h>
-#include <va/va.h>
+#include <util/darray.h>
 
-#include "vaapi-encoder.h"
+#include <va/va.h>
 
 #define VA_LOG(level, format, ...) \
 	blog(level, "[VAAPI encoder]: " format, ##__VA_ARGS__)
@@ -29,5 +29,26 @@
 #define CHECK_STATUS_FALSE(x) \
 	CHECK_STATUS_(x, return false)
 
-const char *vaapi_vendor(vaapi_encoder_t *enc);
+static inline size_t round_up_to_power_of_2(size_t value, size_t alignment)
+{
+	return ((value + (alignment - 1)) & ~(alignment - 1));
+}
+
+typedef struct darray buffer_list_t;
+
+enum vaapi_slice_type
+{
+	VAAPI_SLICE_TYPE_P,
+	VAAPI_SLICE_TYPE_B,
+	VAAPI_SLICE_TYPE_I
+};
+typedef enum vaapi_slice_type vaapi_slice_type_t;
+
+struct coded_block_entry {
+	DARRAY(uint8_t) data;
+	uint64_t pts;
+	vaapi_slice_type_t type;
+};
+typedef struct coded_block_entry coded_block_entry_t;
+
 VADisplay vaapi_get_display();

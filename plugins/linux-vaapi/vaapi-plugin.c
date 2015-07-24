@@ -1,5 +1,6 @@
 #include <obs-module.h>
 #include <util/darray.h>
+#include <util/platform.h>
 
 #include <stdio.h>
 
@@ -16,7 +17,8 @@ struct vaapi_enc
 	vaapi_profile_caps_t *caps;
 	vaapi_encoder_t *encoder;
 
-	vaapi_slice_type_t packed_slice_type;
+	vaapi_slice_type_t packet_slice_type;
+	uint64_t packet_pts;
 	DARRAY(uint8_t) packet;
 
 	FILE *debug_file;
@@ -56,11 +58,10 @@ static bool vaapi_enc_sei(void *data, uint8_t **sei, size_t *size)
 	return false;
 }
 
-void coded_block(void *opaque, void *data, int data_size,
-		vaapi_slice_type_t slice_type)
+void coded_block(void *opaque, coded_block_entry_t *e)
 {
 	struct vaapi_enc *enc = opaque;
-	if (slice_type == VAAPI_SLICE_TYPE_I) {
+ 	if (e->type == VAAPI_SLICE_TYPE_I) {
 		size_t extra_data_size;
 		uint8_t *extra_data;
 		if (vaapi_encoder_extra_data(enc->encoder, &extra_data,
@@ -68,9 +69,9 @@ void coded_block(void *opaque, void *data, int data_size,
 			da_push_back_array(enc->packet, extra_data,
 					extra_data_size);
 	}
-	da_push_back_array(enc->packet, (uint8_t *)data, data_size);
-	enc->packed_slice_type = slice_type;
-
+	da_push_back_array(enc->packet, e->data.array, e->data.num);
+	enc->packet_slice_type = e->type;
+	enc->packet_pts = e->pts;
 	if (!enc->header) {
 		size_t s;
 		uint8_t *d;
@@ -81,7 +82,9 @@ void coded_block(void *opaque, void *data, int data_size,
 		}
 	}
 
-	fwrite(data, 1, data_size, enc->debug_file);
+	fwrite(e->data.array, 1, e->data.num, enc->debug_file);
+
+	da_free(e->data);
 }
 
 static bool vaapi_enc_encode(void *data, struct encoder_frame *frame,
@@ -91,19 +94,20 @@ static bool vaapi_enc_encode(void *data, struct encoder_frame *frame,
 
 	da_resize(enc->packet, 0);
 
+	uint64_t t = os_gettime_ns();
 	vaapi_encoder_encode(enc->encoder, frame);
-
+	VA_LOG(LOG_INFO, "render = %fms", ((double)os_gettime_ns() - t)/1000000000.0);
 	if (enc->packet.num == 0) {
 		*received_packet = false;
 		return true;
 	}
 
 	packet->type = OBS_ENCODER_VIDEO;
-	packet->pts = frame->pts;
-	packet->dts = frame->pts;
+	packet->pts = enc->packet_pts;
+	packet->dts = enc->packet_pts;
 	packet->data = enc->packet.array;
 	packet->size = enc->packet.num;
-	packet->keyframe = enc->packed_slice_type == VAAPI_SLICE_TYPE_I;
+	packet->keyframe = enc->packet_slice_type == VAAPI_SLICE_TYPE_I;
 	*received_packet = true;
 	return true;
 }
@@ -127,7 +131,7 @@ static void *vaapi_enc_create(obs_data_t *settings,
 
 	enc->width = 1280;
 	enc->height = 720;
-	enc->bitrate = 3000;
+	enc->bitrate = 400;
 	enc->cbr = false;
 
 	vaapi_encoder_attribs_t attribs = {
@@ -140,8 +144,7 @@ static void *vaapi_enc_create(obs_data_t *settings,
 		.framerate_den = 1,
 		.keyint = 2,
 		.refpic_cnt = 3,
-
-		// remove these when encode is threaded
+		.surface_cnt = 4,
 		.coded_block_cb = coded_block,
 		.coded_block_cb_opaque = enc
 	};

@@ -9,12 +9,14 @@ include_directories(
 
 set(linux-vaapi_HEADERS
 	bitstream.h
+	surface-queue.h
 	vaapi-caps.h
 	vaapi-common.h
 	vaapi-encoder.h)
 
 set(linux-vaapi_SOURCES
 	bitstream.c
+	surface-queue.c
 	vaapi-caps.c
 	vaapi-common.c
 	vaapi-encoder.c

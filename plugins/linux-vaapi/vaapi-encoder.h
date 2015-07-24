@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vaapi-common.h"
+
 struct vaapi_encoder;
 typedef struct vaapi_encoder vaapi_encoder_t;
 struct vaapi_profile_caps;
@@ -23,16 +25,11 @@ enum vaapi_format {
 };
 typedef enum vaapi_format vaapi_format_t;
 
-enum vaapi_slice_type
-{
-	VAAPI_SLICE_TYPE_P,
-	VAAPI_SLICE_TYPE_B,
-	VAAPI_SLICE_TYPE_I
-};
-typedef enum vaapi_slice_type vaapi_slice_type_t;
+//typedef void(*vaapi_coded_block_cb)(void *opaque, void *data, int data_size,
+//		vaapi_slice_type_t slice_type);
 
-typedef void(*vaapi_coded_block_cb)(void *opaque, void *data, int data_size,
-		vaapi_slice_type_t slice_type);
+typedef void(*vaapi_coded_block_cb)(void *opaque, coded_block_entry_t *entry);
+
 
 struct vaapi_encoder_attribs
 {
@@ -46,6 +43,8 @@ struct vaapi_encoder_attribs
 	uint32_t framerate_den;
 	uint32_t keyint;
 	uint32_t refpic_cnt;
+
+	uint32_t surface_cnt;
 	void *coded_block_cb_opaque;
 	vaapi_coded_block_cb coded_block_cb;
 };

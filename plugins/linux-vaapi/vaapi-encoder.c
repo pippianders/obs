@@ -8,6 +8,7 @@
 #include <X11/Xlib.h>
 
 #include "bitstream.h"
+#include "surface-queue.h"
 #include "vaapi-caps.h"
 #include "vaapi-common.h"
 #include "vaapi-encoder.h"
@@ -49,20 +50,14 @@ enum nal_priority_e
     NAL_PRIORITY_HIGHEST    = 3,
 };
 
-enum write_output_status {
-	OUTPUT_WRITE_SUCCESS,
-	OUTPUT_WRITE_OVERFLOW,
-	OUTPUT_WRITE_FATAL
-};
-typedef enum write_output_status write_output_status_t;
-
 struct vaapi_encoder
 {
 	VADisplay display;
 	VAConfigID config;
 	VAContextID context;
 	DARRAY(VASurfaceID) refpics;
-	DARRAY(VASurfaceID) inputs;
+
+	surface_queue_t *surfq;
 
 	vaapi_profile_caps_t *caps;
 
@@ -88,6 +83,7 @@ struct vaapi_encoder
 	uint64_t frame_cnt;
 	uint32_t output_buf_size;
 
+	uint32_t surface_cnt;
 	void *coded_block_cb_opaque;
 	vaapi_coded_block_cb coded_block_cb;
 	DARRAY(uint8_t) extra_data;
@@ -100,13 +96,11 @@ void vaapi_encoder_destroy(vaapi_encoder_t *enc)
 	if (enc != NULL) {
 		vaDestroySurfaces(enc->display, enc->refpics.array,
 				enc->refpics.num);
+
 		da_free(enc->refpics);
-
-		vaDestroySurfaces(enc->display, enc->inputs.array,
-				enc->inputs.num);
-		da_free(enc->inputs);
-
 		da_free(enc->extra_data);
+
+		surface_queue_destroy(enc->surfq);
 
 		vaDestroyConfig(enc->display, enc->config);
 		vaDestroyContext(enc->display, enc->context);
@@ -754,33 +748,6 @@ bool vaapi_encoder_extra_data(vaapi_encoder_t *enc,
 	return true;
 }
 
-static write_output_status_t write_output(vaapi_encoder_t *enc,
-		VABufferID output_buf, vaapi_slice_type_t slice_type)
-{
-	VACodedBufferSegment *segment;
-	VAStatus status;
-
-	CHECK_STATUS_FAIL(vaMapBuffer(enc->display, output_buf,
-			(void **)&segment));
-
-	if (segment->status & VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK) {
-		enc->output_buf_size *= 2;
-		vaUnmapBuffer(enc->display, output_buf);
-		return OUTPUT_WRITE_OVERFLOW;
-	}
-	enc->coded_block_cb(enc->coded_block_cb_opaque, segment->buf,
-			segment->size, slice_type);
-
-	vaUnmapBuffer(enc->display, output_buf);
-
-	return OUTPUT_WRITE_SUCCESS;
-
-fail:
-	return OUTPUT_WRITE_FATAL;
-}
-
-
-
 static bool render_picture(vaapi_encoder_t *enc, buffer_list_t *list,
 		VASurfaceID input)
 {
@@ -800,8 +767,6 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 	DARRAY(VABufferID) buffers = {0};
 	VABufferID output_buffer;
 	vaapi_slice_type_t slice_type;
-	write_output_status_t output_status;
-
 
 	// todo: implement b frame handling
 	if ((enc->frame_cnt % enc->intra_period) == 0)
@@ -823,27 +788,23 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 		if (!create_packed_sps_pps_buffers(enc, &buffers.da))
 			goto fail;
 
-	do {
-		output_buffer = create_output_buffer(enc);
-		if (!create_pic_buffer(enc, &buffers.da, output_buffer))
-			goto fail;
+	// can we reuse output buffers?
+	output_buffer = create_output_buffer(enc);
+	if (!create_pic_buffer(enc, &buffers.da, output_buffer))
+		goto fail;
 
-		if (!render_picture(enc, &buffers.da, input))
-			goto fail;
+	surface_entry_t e = {
+		.surface = input,
+		.output = output_buffer,
+		.list = buffers.da,
+		.pts = enc->frame_cnt,
+		.type = slice_type
+	};
 
-		output_status = write_output(enc, output_buffer, slice_type);
-
-		vaDestroyBuffer(enc->display, output_buffer);
-		output_buffer = VA_INVALID_ID;
-
-		// destroy pic buffer
-		destroy_last_buffer(enc, &buffers.da);
-	} while(output_status == OUTPUT_WRITE_OVERFLOW);
+	if (!surface_queue_push_and_render(enc->surfq, &e))
+		goto fail;
 
 	enc->frame_cnt++;
-	destroy_buffers(enc, &buffers.da);
-	da_free(buffers);
-
 	return true;
 
 fail:
@@ -883,42 +844,12 @@ fail:
 	return false;
 }
 
-bool create_input_surface(vaapi_encoder_t *enc, VASurfaceID *input)
-{
-	VAStatus status;
-	VASurfaceID surface;
-
-	CHECK_STATUS_FALSE(vaCreateSurfaces(enc->display, VA_RT_FORMAT_YUV420,
-			enc->width, enc->height, &surface, 1, NULL, 0));
-
-	*input = surface;
-	return true;
-}
-
-// No locking yet because we don't thread encodes
-bool lease_input_surface(vaapi_encoder_t *enc, VASurfaceID *input)
-{
-	if (enc->inputs.num > 0) {
-		*input = enc->inputs.array[enc->inputs.num - 1];
-		da_pop_back(enc->inputs);
-		return true;
-	} else {
-		return create_input_surface(enc, input);
-	}
-	return false;
-}
-
-void release_input_surface(vaapi_encoder_t *enc, VASurfaceID input)
-{
-	da_push_back(enc->inputs, &input);
-}
-
 bool vaapi_encoder_encode(vaapi_encoder_t *enc, struct encoder_frame *frame)
 {
 	VASurfaceID input_surface;
 
-	if (!lease_input_surface(enc, &input_surface)) {
-		VA_LOG(LOG_ERROR, "unable to aquire lease on input surface");
+	if (!surface_queue_pop_available(enc->surfq, &input_surface)) {
+		VA_LOG(LOG_ERROR, "unable to aquire input surface");
 		goto fail;
 	}
 
@@ -929,13 +860,20 @@ bool vaapi_encoder_encode(vaapi_encoder_t *enc, struct encoder_frame *frame)
 		goto fail;
 	}
 
-	// todo: move encode_surface to its own thread
 	if (!encode_surface(enc, input_surface)) {
 		VA_LOG(LOG_ERROR, "unable to encode frame");
 		goto fail;
 	}
 
-	release_input_surface(enc, input_surface);
+	coded_block_entry_t c;
+	bool success;
+	if (!surface_queue_pop_finished(enc->surfq, &c, &success)) {
+		VA_LOG(LOG_ERROR, "unable to pop finished frame");
+		goto fail;
+	}
+
+	if (success)
+		enc->coded_block_cb(enc->coded_block_cb_opaque, &c);
 
 	return true;
 
@@ -974,13 +912,13 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 	enc->keyint                = attribs->keyint;
 	enc->format                = attribs->format;
 
+	enc->surface_cnt         = attribs->surface_cnt;
 	enc->coded_block_cb_opaque = attribs->coded_block_cb_opaque;
 	enc->coded_block_cb        = attribs->coded_block_cb;
 
 	enc->output_buf_size = enc->width * enc->height;
 
 	da_resize(enc->refpics, attribs->refpic_cnt);
-	da_resize(enc->inputs, 0);
 
 	if (!initialize_encoder(enc)) {
 		VA_LOG(LOG_ERROR, "failed to initialize encoder for profile %s",
@@ -989,6 +927,9 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 	}
 
 	initialize_defaults(enc);
+
+	enc->surfq = surface_queue_create(enc->display, enc->context,
+			enc->surface_cnt, enc->width, enc->height);
 
 	return enc;
 
