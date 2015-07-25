@@ -26,6 +26,13 @@ enum {
 	HRD_TIME_OFFSET_LEN        = 24
 };
 
+enum chroma_formats {
+	SPS_CHROMA_FORMAT_MONOCHROME = 0,
+	SPS_CHROMA_FORMAT_420        = 1,
+	SPS_CHROMA_FORMAT_422        = 2,
+	SPS_CHROMA_FORMAT_444        = 3,
+};
+
 enum nal_unit_type_e
 {
     NAL_UNKNOWN     = 0,
@@ -63,7 +70,7 @@ struct vaapi_encoder
 
 	uint32_t bitrate;
 	uint32_t bitrate_bits;
-	bool cbr;
+	uint32_t rc;
 	uint32_t height;
 	uint32_t width;
 	uint32_t keyint;
@@ -72,8 +79,8 @@ struct vaapi_encoder
 	vaapi_format_t format;
 
 	uint32_t intra_period;
-	uint32_t cbp_window_ms;
-	uint32_t cbp_size;
+	uint32_t cpb_window_ms;
+	uint32_t cpb_size;
 	uint32_t qp;
 
 	VAEncSequenceParameterBufferH264 sps;
@@ -109,13 +116,59 @@ void vaapi_encoder_destroy(vaapi_encoder_t *enc)
 	}
 }
 
+static VAConfigAttrib *get_caps_attr(vaapi_encoder_t *enc, VAConfigAttribType t)
+{
+	for(size_t i = 0; i < enc->caps->attribs_cnt; i++)
+		if (enc->caps->attribs[i].type == t)
+			return &enc->caps->attribs[i];
+
+}
+
+
+
+static bool apply_rate_control(vaapi_encoder_t *enc, VAConfigAttrib *a)
+{
+	if ((a->value & enc->rc) == 0) {
+		VA_LOG(LOG_ERROR, "hardware doesn't support specified '%s'",
+				vaapi_rc_to_str(enc->rc));
+		return false;
+	}
+
+	a->value &= enc->rc;
+
+	return true;
+}
+static bool prepare_encoder_attributes(vaapi_encoder_t *enc,
+		struct darray *attribs)
+{
+	for(size_t i = 0; i < enc->caps->attribs_cnt; i++) {
+		VAConfigAttrib attr = enc->caps->attribs[i];
+		switch (enc->caps->attribs[i].type)
+		{
+		case VAConfigAttribRateControl:
+			if (!apply_rate_control(enc, &attr))
+				return false;
+			break;
+		default: // todo: add config to str; ignore for now
+			break;
+		}
+
+		darray_push_back(sizeof(VAConfigAttrib), attribs, &attr);
+	}
+
+	return true;
+}
+
 static bool initialize_encoder(vaapi_encoder_t *enc)
 {
 	VAStatus status;
 
+	DARRAY(VAConfigAttrib) encoder_attribs = {0};
+	prepare_encoder_attributes(enc, &encoder_attribs.da);
+
 	CHECK_STATUS_FALSE(vaCreateConfig(enc->display, enc->caps->def.va,
-			enc->caps->entrypoint, enc->caps->attribs,
-			enc->caps->attribs_cnt, &enc->config));
+			enc->caps->entrypoint, encoder_attribs.array,
+			encoder_attribs.num, &enc->config));
 
 	CHECK_STATUS_FAIL(vaCreateContext(enc->display, enc->config,
 			enc->width, enc->height, VA_PROGRESSIVE, NULL, 0,
@@ -136,10 +189,10 @@ fail:
 	return false;
 }
 
-bool vaapi_encoder_set_cbp_window(vaapi_encoder_t *enc, uint32_t cbp_window_ms)
+bool vaapi_encoder_set_cpb_window(vaapi_encoder_t *enc, uint32_t cpb_window_ms)
 {
-	enc->cbp_window_ms = cbp_window_ms;
-	enc->cbp_size = (enc->bitrate_bits * enc->cbp_window_ms) / 1000;
+	enc->cpb_window_ms = cpb_window_ms;
+	enc->cpb_size = (enc->bitrate_bits * enc->cpb_window_ms) / 1000;
 
 	return true;
 }
@@ -151,7 +204,7 @@ bool vaapi_encoder_set_bitrate(vaapi_encoder_t *enc, uint32_t bitrate)
 	enc->bitrate_bits &= ~((1U << HRD_BITRATE_SCALE) - 1);
 
 	// recalculate window size
-	vaapi_encoder_set_cbp_window(enc, enc->cbp_window_ms);
+	vaapi_encoder_set_cpb_window(enc, enc->cpb_window_ms);
 
 	return true;
 }
@@ -168,17 +221,19 @@ static void init_sps(vaapi_encoder_t *enc)
 	height_in_mbs = (enc->height + 15) / 16;
 
 #define SPS enc->sps
-	SPS.level_idc = 41;
+	SPS.level_idc = 30;
 	SPS.intra_period = enc->intra_period;
 	SPS.bits_per_second = enc->bitrate_bits;
 	SPS.max_num_ref_frames = 4;
 	SPS.picture_width_in_mbs = width_in_mbs;
 	SPS.picture_height_in_mbs = height_in_mbs;
 	SPS.seq_fields.bits.frame_mbs_only_flag = 1;
+	SPS.seq_fields.bits.chroma_format_idc = SPS_CHROMA_FORMAT_420;
 
-	SPS.time_scale = enc->framerate_num;
+	SPS.time_scale = enc->framerate_num * 2;
 	SPS.num_units_in_tick = enc->framerate_den;
 	SPS.vui_fields.bits.timing_info_present_flag = true;
+	SPS.vui_fields.bits.bitstream_restriction_flag = true;
 
 	if (height_in_mbs * 16 - enc->height > 0) {
 		frame_cropping_flag = 1;
@@ -199,7 +254,9 @@ static void init_pps(vaapi_encoder_t *enc)
 #define PPS enc->pps
 	PPS.pic_init_qp = enc->qp;
 
-	PPS.pic_fields.bits.entropy_coding_mode_flag = 1;
+	PPS.pic_fields.bits.entropy_coding_mode_flag =
+			enc->caps->def.vaapi == VAAPI_PROFILE_MAIN ||
+			enc->caps->def.vaapi == VAAPI_PROFILE_HIGH;
 	PPS.pic_fields.bits.deblocking_filter_control_present_flag = 1;
 #undef PPS
 }
@@ -208,11 +265,11 @@ static void initialize_defaults(vaapi_encoder_t *enc)
 {
 	float fps = (float)enc->framerate_num / enc->framerate_den;
 	enc->intra_period = fps * enc->keyint;
-	enc->qp = 0;
-	enc->cbp_window_ms = 1500;
+	enc->qp = 26;
+	enc->cpb_window_ms = 1500;
 
 	vaapi_encoder_set_bitrate(enc, enc->bitrate);
-	vaapi_encoder_set_cbp_window(enc, 1500);
+	vaapi_encoder_set_cpb_window(enc, 1500);
 
 	init_sps(enc);
 	init_pps(enc);
@@ -262,8 +319,6 @@ bool pack_pps(vaapi_encoder_t *enc, bitstream_t *bs)
 	// redundant_pic_cnt_present_flag
 	bs_append_bits(bs, 1, 0);
 
-	APPEND_PFB(1, transform_8x8_mode_flag);
-
 	if (enc->caps->def.vaapi == VAAPI_PROFILE_HIGH) {
 		APPEND_PFB(1, transform_8x8_mode_flag);
 		// pic_scaling_matrix_present_flag
@@ -277,6 +332,11 @@ bool pack_pps(vaapi_encoder_t *enc, bitstream_t *bs)
 
 #undef APPEND_PFB
 #undef PIC
+}
+
+bool pack_sei(vaapi_encoder_t *enc, bitstream_t *bs)
+{
+
 }
 
 bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
@@ -321,6 +381,22 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 	bs_append_bits(bs, 8, SPS.level_idc);
 	bs_append_ue(bs, SPS.seq_parameter_set_id);
 
+	if (profile_idc == SPS_PROFILE_IDC_HIGH) {
+#define SPS_SEQ enc->sps.seq_fields.bits
+		bs_append_ue(bs, SPS_SEQ.chroma_format_idc);
+		if (SPS_SEQ.chroma_format_idc == SPS_CHROMA_FORMAT_444)
+			// separate_colour_plane_flag
+			bs_append_bool(bs, false);
+		bs_append_ue(bs, SPS.bit_depth_luma_minus8);
+		bs_append_ue(bs, SPS.bit_depth_chroma_minus8);
+		// qpprime_y_zero_transform_bypass_flag
+		bs_append_bool(bs, false);
+		// scaling matrix not current supported
+		assert(SPS.seq_scaling_matrix_present_flag == 0);
+		bs_append_bits(bs, 1, SPS_SEQ.seq_scaling_matrix_present_flag);
+#undef SPS_SEQ
+	}
+
 #define APPEND_SFB(x) bs_append_ue(bs, SPS.seq_fields.bits.x);
 	APPEND_SFB(log2_max_frame_num_minus4);
 	APPEND_SFB(pic_order_cnt_type);
@@ -328,6 +404,7 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 #undef APPEND_SFB
 
 	bs_append_ue(bs, SPS.max_num_ref_frames);
+
 	bs_append_bits(bs, 1, 0); // gaps_in_frame_num_value_allowed_flag
 
 	// pic_width_in_mbs_minus1
@@ -365,7 +442,7 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 	bs_append_bits(bs, 1, SPS.vui_fields.bits.timing_info_present_flag);
 	{
 		bs_append_bits(bs, 32, SPS.num_units_in_tick);
-		bs_append_bits(bs, 32, SPS.time_scale * 2);
+		bs_append_bits(bs, 32, SPS.time_scale);
 
 		// fixed_frame_rate_flag
 		bs_append_bool(bs, true);
@@ -387,10 +464,10 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 			int bit_rate_scale = enc->bitrate_bits;
 			bit_rate_scale >>= HRD_BITRATE_SCALE;
 			bs_append_ue(bs, bit_rate_scale - 1);
-			int cbp_size_scale = enc->cbp_size;
-			cbp_size_scale >>= HRD_CPB_SIZE_SCALE;
-			bs_append_ue(bs, cbp_size_scale - 1);
-			bs_append_bool(bs, enc->cbr);
+			int cpb_size_scale = enc->cpb_size;
+			cpb_size_scale >>= HRD_CPB_SIZE_SCALE;
+			bs_append_ue(bs, cpb_size_scale - 1);
+			bs_append_bool(bs, !!(enc->rc & VA_RC_CBR));
 		}
 		// initial_cpb_removal_delay_length_minus1
 		bs_append_bits(bs, 5, 23);
@@ -416,12 +493,10 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 	// pic_struct_present_flag
 	bs_append_bool(bs, false);
 
-	bool bitstream_restriction_flag = true;
-
 	// bitstream_restriction_flag
-	bs_append_bool(bs, bitstream_restriction_flag);
+	bs_append_bits(bs, 1, SPS.vui_fields.bits.bitstream_restriction_flag);
 
-	if (bitstream_restriction_flag) {
+	if (SPS.vui_fields.bits.bitstream_restriction_flag == 1) {
 		// motion_vectors_over_pic_boundaries_flag
 		bs_append_bool(bs, false);
 		// max_bytes_per_pic_denom
@@ -569,11 +644,10 @@ static bool create_misc_rc_buffer(vaapi_encoder_t *enc,
 
 	rc.bits_per_second = enc->bitrate_bits;
 	rc.target_percentage = 90;
-	rc.window_size = enc->cbp_size;
+	rc.window_size = enc->cpb_window_ms;
 	rc.initial_qp = enc->qp;
-	rc.min_qp = 1;
-	rc.basic_unit_size = 0;
-	rc.rc_flags.bits.disable_frame_skip = false;
+	rc.min_qp = enc->qp;
+	rc.rc_flags.bits.disable_frame_skip = true;
 
 	if (!create_misc_buffer(enc, VAEncMiscParameterTypeRateControl,
 			sizeof(rc), &rc, list)) {
@@ -590,8 +664,8 @@ static bool create_misc_hdr_buffer(vaapi_encoder_t *enc,
 {
 	VAEncMiscParameterHRD hrd = {0};
 
-	hrd.initial_buffer_fullness = enc->cbp_size / 2;
-	hrd.buffer_size = enc->cbp_size;
+	hrd.initial_buffer_fullness = enc->cpb_size / 2;
+	hrd.buffer_size = enc->cpb_size;
 
 	if (!create_misc_buffer(enc, VAEncMiscParameterTypeHRD,
 			sizeof(hrd), &hrd, list)) {
@@ -628,7 +702,8 @@ static bool create_pic_buffer(vaapi_encoder_t *enc, buffer_list_t *list,
 	PPS.frame_num = enc->frame_cnt;
 	PPS.pic_init_qp = enc->qp;
 
-	PPS.pic_fields.bits.idr_pic_flag = (enc->frame_cnt == 0);
+	PPS.pic_fields.bits.idr_pic_flag =
+			(enc->frame_cnt % enc->intra_period) == 0;
 	PPS.pic_fields.bits.reference_pic_flag = 1;
 
 	if (!create_buffer(enc, VAEncPictureParameterBufferType,
@@ -905,12 +980,12 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 
 	// bitrate internally is bits, not kbits
 	enc->bitrate               = attribs->bitrate;
-	enc->cbr                   = attribs->cbr;
 
 	enc->framerate_num         = attribs->framerate_num;
 	enc->framerate_den         = attribs->framerate_den;
 	enc->keyint                = attribs->keyint;
 	enc->format                = attribs->format;
+	enc->rc                    = attribs->cbr ? VA_RC_CBR : VA_RC_VBR;
 
 	enc->surface_cnt         = attribs->surface_cnt;
 	enc->coded_block_cb_opaque = attribs->coded_block_cb_opaque;

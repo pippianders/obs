@@ -1,5 +1,7 @@
 #include "surface-queue.h"
 
+#include <util/platform.h>
+
 struct surface_queue {
 	VADisplay display;
 	VAContextID context;
@@ -142,6 +144,7 @@ bool surface_queue_pop_available(surface_queue_t *q, VASurfaceID *surface)
 	} else {
 		*surface = q->available.array[0];
 		da_erase(q->available, 0);
+
 		return true;
 	}
 }
@@ -149,6 +152,8 @@ bool surface_queue_pop_available(surface_queue_t *q, VASurfaceID *surface)
 static bool render_surface(surface_queue_t *q, surface_entry_t *e)
 {
 	VAStatus status;
+
+	uint64_t t = os_gettime_ns();
 
 	CHECK_STATUS_FALSE(vaBeginPicture(q->display, q->context, e->surface));
 	CHECK_STATUS_FALSE(vaRenderPicture(q->display, q->context,
@@ -173,7 +178,7 @@ bool surface_queue_pop_finished(surface_queue_t *q, coded_block_entry_t *c,
 {
 	*success = true;
 
-	if (q->finished.num > 0) {
+ 	if (q->finished.num > 0) {
 		*c = q->finished.array[0];
 		da_erase(q->finished, 0);
 		return true;
@@ -196,6 +201,8 @@ bool surface_queue_pop_finished(surface_queue_t *q, coded_block_entry_t *c,
 			*success = false;
 			return false;
 		}
+		da_push_back(q->available, &e->surface);
+
 		reset_entry(q, e);
 		da_erase(q->rendering, 0);
 

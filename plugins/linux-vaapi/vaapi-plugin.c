@@ -20,11 +20,7 @@ struct vaapi_enc
 	vaapi_slice_type_t packet_slice_type;
 	uint64_t packet_pts;
 	DARRAY(uint8_t) packet;
-
-	FILE *debug_file;
-	bool header;
 };
-
 
 static void vaapi_enc_video_info(void *data,
 		struct video_scale_info *info)
@@ -32,8 +28,6 @@ static void vaapi_enc_video_info(void *data,
 	struct vaapi_enc *enc = data;
 
 	info->format = enc->format;
-	info->width = enc->width;
-	info->height = enc->height;
 }
 
 static const char *vaapi_enc_getname(void)
@@ -65,24 +59,14 @@ void coded_block(void *opaque, coded_block_entry_t *e)
 		size_t extra_data_size;
 		uint8_t *extra_data;
 		if (vaapi_encoder_extra_data(enc->encoder, &extra_data,
-				&extra_data_size))
+				&extra_data_size)) {
 			da_push_back_array(enc->packet, extra_data,
 					extra_data_size);
+		}
 	}
 	da_push_back_array(enc->packet, e->data.array, e->data.num);
 	enc->packet_slice_type = e->type;
 	enc->packet_pts = e->pts;
-	if (!enc->header) {
-		size_t s;
-		uint8_t *d;
-		vaapi_encoder_extra_data(enc->encoder, &d, &s);
-		if (s > 0) {
-			fwrite(d, 1, s, enc->debug_file);
-			enc->header = true;
-		}
-	}
-
-	fwrite(e->data.array, 1, e->data.num, enc->debug_file);
 
 	da_free(e->data);
 }
@@ -94,9 +78,8 @@ static bool vaapi_enc_encode(void *data, struct encoder_frame *frame,
 
 	da_resize(enc->packet, 0);
 
-	uint64_t t = os_gettime_ns();
 	vaapi_encoder_encode(enc->encoder, frame);
-	VA_LOG(LOG_INFO, "render = %fms", ((double)os_gettime_ns() - t)/1000000000.0);
+
 	if (enc->packet.num == 0) {
 		*received_packet = false;
 		return true;
@@ -129,29 +112,31 @@ static void *vaapi_enc_create(obs_data_t *settings,
 {
 	struct vaapi_enc *enc = bzalloc(sizeof(struct vaapi_enc));
 
-	enc->width = 1280;
-	enc->height = 720;
-	enc->bitrate = 400;
-	enc->cbr = false;
+	video_t *video = obs_encoder_video(encoder);
+	const struct video_output_info *voi = video_output_get_info(video);
+
+	enc->width = obs_encoder_get_width(encoder);
+	enc->height = obs_encoder_get_height(encoder);
+
+	enc->bitrate = 5000;
+	enc->cbr = true;
 
 	vaapi_encoder_attribs_t attribs = {
-		.profile = VAAPI_PROFILE_BASELINE,
+		.profile = VAAPI_PROFILE_HIGH,
 		.width = enc->width,
 		.height = enc->height,
 		.bitrate = enc->bitrate,
 		.cbr = enc->cbr,
-		.framerate_num = 60,
-		.framerate_den = 1,
+		.framerate_num = voi->fps_num,
+		.framerate_den = voi->fps_den,
 		.keyint = 2,
 		.refpic_cnt = 3,
-		.surface_cnt = 4,
+		.surface_cnt = 2,
 		.coded_block_cb = coded_block,
 		.coded_block_cb_opaque = enc
 	};
 	enc->format = VIDEO_FORMAT_NV12;
 	enc->encoder = vaapi_encoder_create(&attribs);
-
-	enc->debug_file = fopen("/home/jrb/Videos/out.h264", "w");
 
 	if (enc->encoder == NULL)
 		goto fail;

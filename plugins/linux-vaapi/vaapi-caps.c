@@ -20,7 +20,11 @@ static const size_t va_profiles_cnt =
 static VAConfigAttrib vaapi_config_attribs[] = {
 	{ VAConfigAttribRTFormat,         VA_RT_FORMAT_YUV420           |
 	                                  VA_RT_FORMAT_YUV444             },
-	{ VAConfigAttribRateControl,      VA_RC_CBR                       },
+	{ VAConfigAttribRateControl,      VA_RC_CBR                     |
+	                                  VA_RC_VBR                     |
+	                                  VA_RC_VCM                     |
+					  VA_RC_CQP                     |
+	                                  VA_RC_VBR_CONSTRAINED           },
 	{ VAConfigAttribEncPackedHeaders, VA_ENC_PACKED_HEADER_SEQUENCE |
 	                                  VA_ENC_PACKED_HEADER_PICTURE    }
 };
@@ -63,6 +67,26 @@ static void vaapi_profile_caps_dump(struct vaapi_profile_caps *p)
 	VA_LOG(LOG_DEBUG, "             \tYUV444: %s", FMT_SUPP(YUV444));
 #undef FMT_SUPP
 
+	for(size_t i = 0; i < p->attribs_cnt; i++) {
+		switch(p->attribs[i].type)
+		{
+		case VAConfigAttribRateControl:
+#define RC_SUPP(rc) (((p->attribs[i].value & VA_RC_ ## rc) > 0) \
+	? #rc ": yes" : #rc": no" )
+
+			VA_LOG(LOG_DEBUG, "    rate: \t%s", RC_SUPP(NONE));
+			VA_LOG(LOG_DEBUG, "    rate: \t%s", RC_SUPP(CBR));
+			VA_LOG(LOG_DEBUG, "    rate: \t%s", RC_SUPP(VBR));
+			VA_LOG(LOG_DEBUG, "    rate: \t%s", RC_SUPP(VCM));
+			VA_LOG(LOG_DEBUG, "    rate: \t%s", RC_SUPP(CQP));
+			VA_LOG(LOG_DEBUG, "    rate: \t%s",
+					RC_SUPP(VBR_CONSTRAINED));
+#undef RC_SUPP
+			break;
+		default:
+			break;
+		}
+	}
 }
 
 static bool apply_encoder_dimensions(VADisplay display, VAProfile profile,
@@ -155,12 +179,12 @@ static bool apply_encoder_attrib(VADisplay display, VAProfile profile,
 		case VAConfigAttribRTFormat:
 			if (!ATTRIB_ANY)
 				return false;
-			supported_profile->format = attribs.array[i].value;
+			supported_profile->format &= attribs.array[i].value;
 			continue;
 		case VAConfigAttribRateControl:
-			if (!ATTRIB_PRESENT)
+			if (!ATTRIB_ANY)
 				return false;
-			supported_profile->rc = attribs.array[i].value;
+			supported_profile->rc &= attribs.array[i].value;
 			continue;
 		case VAConfigAttribEncPackedHeaders:
 			if (!ATTRIB_PRESENT)
