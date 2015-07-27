@@ -83,6 +83,7 @@ struct vaapi_encoder
 	uint32_t intra_period;
 	uint32_t cpb_window_ms;
 	uint32_t cpb_size;
+	uint32_t cpb_size_bits;
 	uint32_t qp;
 
 	VAEncSequenceParameterBufferH264 sps;
@@ -103,6 +104,8 @@ typedef struct darray buffer_list_t;
 void vaapi_encoder_destroy(vaapi_encoder_t *enc)
 {
 	if (enc != NULL) {
+		vaapi_display_lock(enc->vdisplay);
+
 		vaDestroySurfaces(enc->display, enc->refpics.array,
 				enc->refpics.num);
 
@@ -113,6 +116,8 @@ void vaapi_encoder_destroy(vaapi_encoder_t *enc)
 
 		vaDestroyConfig(enc->display, enc->config);
 		vaDestroyContext(enc->display, enc->context);
+
+		vaapi_display_unlock(enc->vdisplay);
 
 		bfree(enc);
 	}
@@ -181,9 +186,13 @@ fail:
 	return false;
 }
 
+#define HRD_SCALE(scale) (~((1U << scale) - 1))
+
 bool vaapi_encoder_set_cpb_size(vaapi_encoder_t *enc, uint32_t cpb_size)
 {
-	enc->cpb_size = enc->bitrate_bits * enc->cpb_window_ms;
+	enc->cpb_size = cpb_size;
+	enc->cpb_size_bits = cpb_size * enc->cpb_window_ms;
+	enc->cpb_size_bits &= HRD_SCALE(HRD_CPB_SIZE_SCALE);
 
 	return true;
 }
@@ -192,7 +201,7 @@ bool vaapi_encoder_set_bitrate(vaapi_encoder_t *enc, uint32_t bitrate)
 {
 	enc->bitrate = bitrate;
 	enc->bitrate_bits = bitrate * 1000;
-	enc->bitrate_bits &= ~((1U << HRD_BITRATE_SCALE) - 1);
+	enc->bitrate_bits &= HRD_SCALE(HRD_BITRATE_SCALE);
 
 	return true;
 }
@@ -430,10 +439,10 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 		// cpb_size_scale
 		bs_append_bits(bs, 4, 0 /*default*/);
 		for(int i = 0; i <= cpb_cnt_minus1; i++) {
-			int bit_rate_scale = enc->bitrate_bits;
+			uint32_t bit_rate_scale = enc->bitrate_bits;
 			bit_rate_scale >>= HRD_BITRATE_SCALE;
 			bs_append_ue(bs, bit_rate_scale - 1);
-			int cpb_size_scale = enc->cpb_size;
+			uint32_t cpb_size_scale = enc->cpb_size_bits;
 			cpb_size_scale >>= HRD_CPB_SIZE_SCALE;
 			bs_append_ue(bs, cpb_size_scale - 1);
 			bs_append_bool(bs, !!(enc->rc & VA_RC_CBR));
@@ -633,8 +642,8 @@ static bool create_misc_hdr_buffer(vaapi_encoder_t *enc,
 {
 	VAEncMiscParameterHRD hrd = {0};
 
-	hrd.initial_buffer_fullness = enc->cpb_size / 2;
-	hrd.buffer_size = enc->cpb_size;
+	hrd.initial_buffer_fullness = enc->cpb_size_bits / 2;
+	hrd.buffer_size = enc->cpb_size_bits;
 
 	if (!create_misc_buffer(enc, VAEncMiscParameterTypeHRD,
 			sizeof(hrd), &hrd, list)) {
@@ -892,6 +901,8 @@ bool vaapi_encoder_encode(vaapi_encoder_t *enc, struct encoder_frame *frame)
 {
 	VASurfaceID input_surface;
 
+	vaapi_display_lock(enc->vdisplay);
+
 	if (!surface_queue_pop_available(enc->surfq, &input_surface)) {
 		VA_LOG(LOG_ERROR, "unable to aquire input surface");
 		goto fail;
@@ -919,10 +930,14 @@ bool vaapi_encoder_encode(vaapi_encoder_t *enc, struct encoder_frame *frame)
 	if (success)
 		enc->coded_block_cb(enc->coded_block_cb_opaque, &c);
 
+	vaapi_display_unlock(enc->vdisplay);
+
 	return true;
 
 fail:
 	vaDestroySurfaces(enc->display, &input_surface, 1);
+
+	vaapi_display_unlock(enc->vdisplay);
 
 	return false;
 }
@@ -935,14 +950,14 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 
 	enc->vdisplay = attribs->display;
 
+	vaapi_display_lock(enc->vdisplay);
+
 	// This display is currently closed
-	if (enc->vdisplay->display == NULL) {
-		if (!vaapi_display_open(enc->vdisplay)) {
-			const char *name = enc->vdisplay->name;
-			VA_LOG(LOG_ERROR, "unable to open '%s' device",
-					!!name ? name : "Undefined");
-			goto fail;
-		}
+	if (!vaapi_display_open(enc->vdisplay)) {
+		const char *name = enc->vdisplay->name;
+		VA_LOG(LOG_ERROR, "unable to open '%s' device",
+				!!name ? name : "Undefined");
+		goto fail;
 	}
 
 	enc->display = attribs->display->display;
@@ -988,6 +1003,8 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 	enc->qp = 26;
 	vaapi_encoder_set_bitrate(enc, enc->bitrate);
 
+	enc->cpb_window_ms = attribs->cpb_window_ms;
+
 	if (attribs->use_custom_cpb_size)
 		vaapi_encoder_set_cpb_size(enc, attribs->cpb_size);
 	else
@@ -999,9 +1016,14 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 	enc->surfq = surface_queue_create(enc->display, enc->context,
 			enc->surface_cnt, enc->width, enc->height);
 
+	vaapi_display_unlock(enc->vdisplay);
+
 	return enc;
 
 fail:
+
+	vaapi_display_unlock(enc->vdisplay);
+
 	vaapi_encoder_destroy(enc);
 
 	return NULL;

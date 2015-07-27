@@ -11,6 +11,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <pthread.h>
+
 static bool init_va_display(VADisplay display)
 {
 	VAStatus status;
@@ -89,17 +91,22 @@ const char *vaapi_display_path(vaapi_display_t *d)
 	return d->path;
 }
 
-void vaapi_display_destroy(vaapi_display_t *d)
+void vaapi_display_lock(vaapi_display_t *d)
 {
-	vaapi_display_close(d);
-	da_free(d->caps);
-	bfree((char *)d->path);
-	bfree((char *)d->name);
-	bfree(d);
+	pthread_mutex_lock(&d->mutex);
+}
+
+void vaapi_display_unlock(vaapi_display_t *d)
+{
+	pthread_mutex_unlock(&d->mutex);
 }
 
 bool vaapi_display_open(vaapi_display_t *d)
 {
+	// already open
+	if (d->display != NULL)
+		return true;
+
 	if (d->type == VAAPI_DISPLAY_X) {
 		if (!init_x_display(d))
 			goto fail;
@@ -121,6 +128,16 @@ fail:
 	vaapi_display_close(d);
 }
 
+void vaapi_display_destroy(vaapi_display_t *d)
+{
+	vaapi_display_close(d);
+
+	da_free(d->caps);
+	bfree((char *)d->path);
+	bfree((char *)d->name);
+	bfree(d);
+}
+
 vaapi_display_t *vaapi_display_create(vaapi_display_type_t type,
 		const char *path)
 {
@@ -132,6 +149,8 @@ vaapi_display_t *vaapi_display_create(vaapi_display_type_t type,
 	d = bzalloc(sizeof(vaapi_display_t));
 
 	d->type = type;
+
+	pthread_mutex_init(&d->mutex, NULL);
 
 	if (path != NULL) {
 		path_len = strlen(path);

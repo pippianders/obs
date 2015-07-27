@@ -3,6 +3,7 @@
 #include <util/darray.h>
 #include <va/va_x11.h>
 #include <va/va_drm.h>
+#include <pthread.h>
 
 struct vaapi_display {
 	vaapi_display_type_t type;
@@ -10,6 +11,7 @@ struct vaapi_display {
 	const char *name;
 
 	VADisplay display;
+	pthread_mutex_t mutex;
 
 	union {
 		Display *x_display;

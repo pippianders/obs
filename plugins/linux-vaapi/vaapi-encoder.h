@@ -47,6 +47,7 @@ struct vaapi_encoder_attribs
 	uint32_t refpic_cnt;
 	bool use_custom_cpb_size;
 	uint32_t cpb_size;
+	uint32_t cpb_window_ms;
 
 	uint32_t surface_cnt;
 	void *coded_block_cb_opaque;
@@ -54,13 +55,14 @@ struct vaapi_encoder_attribs
 };
 typedef struct vaapi_encoder_attribs vaapi_encoder_attribs_t;
 
+// Lock on display
 vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs);
 void vaapi_encoder_destroy(vaapi_encoder_t *encoder);
-const char *vaapi_encoder_vendor(vaapi_encoder_t *enc);
 bool vaapi_encoder_encode(vaapi_encoder_t *enc,
 		struct encoder_frame *frame);
+
+// Do not lock on display
+const char *vaapi_encoder_vendor(vaapi_encoder_t *enc);
 bool vaapi_encoder_extra_data(vaapi_encoder_t *enc,
 		uint8_t **extra_data, size_t *extra_data_size);
 
-vaapi_profile_caps_t *vaapi_encoder_profile_create(
-	vaapi_profile_t format_profile);
