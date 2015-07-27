@@ -9,9 +9,11 @@ include_directories(
 
 set(linux-vaapi_HEADERS
 	bitstream.h
+	vaapi-internal.h
 	surface-queue.h
 	vaapi-caps.h
 	vaapi-common.h
+	vaapi-display.h
 	vaapi-encoder.h)
 
 set(linux-vaapi_SOURCES
@@ -19,6 +21,7 @@ set(linux-vaapi_SOURCES
 	surface-queue.c
 	vaapi-caps.c
 	vaapi-common.c
+	vaapi-display.c
 	vaapi-encoder.c
 	vaapi-plugin.c
 )

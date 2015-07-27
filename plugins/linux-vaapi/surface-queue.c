@@ -25,7 +25,7 @@ surface_queue_t *surface_queue_create(VADisplay display, VAContextID context,
 	q->width = width;
 	q->height = height;
 
-	q->output_size = round_up_to_power_of_2(width * height, 16);
+	q->output_size = round_up_to_power_of_2(width * height * 4, 16);
 
 	da_reserve(q->available, size);
 	da_reserve(q->rendering, size);
@@ -176,11 +176,10 @@ bool surface_queue_push_and_render(surface_queue_t *q, surface_entry_t *e)
 bool surface_queue_pop_finished(surface_queue_t *q, coded_block_entry_t *c,
 		bool *success)
 {
-	*success = true;
-
  	if (q->finished.num > 0) {
 		*c = q->finished.array[0];
 		da_erase(q->finished, 0);
+		*success = true;
 		return true;
 	} else if (q->rendering.num > 0) {
 		surface_entry_t *e = &q->rendering.array[0];
@@ -193,12 +192,11 @@ bool surface_queue_pop_finished(surface_queue_t *q, coded_block_entry_t *c,
 
 		// next surface in rendering queue isn't finished
 		if (surface_status != VASurfaceReady) {
-			*success = true;
-			return false;
+			*success = false;
+			return true;
 		}
 
 		if (!make_finished(q, e, c)) {
-			*success = false;
 			return false;
 		}
 		da_push_back(q->available, &e->surface);
@@ -206,8 +204,10 @@ bool surface_queue_pop_finished(surface_queue_t *q, coded_block_entry_t *c,
 		reset_entry(q, e);
 		da_erase(q->rendering, 0);
 
+		*success = true;
 		return true;
 	}
 	// no rendering or finished surfaces available
-	return false;
+	*success = false;
+	return true;
 }

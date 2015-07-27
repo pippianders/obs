@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "vaapi-display.h"
 #include "vaapi-encoder.h"
 
 struct vaapi_profile_def {
@@ -25,9 +26,11 @@ struct vaapi_profile_caps {
 };
 typedef struct vaapi_profile_caps vaapi_profile_caps_t;
 
-bool vaapi_caps_init();
-void vaapi_caps_destroy();
-struct vaapi_profile_caps *vaapi_caps_from_profile(
+typedef DARRAY(vaapi_profile_caps_t) vaapi_display_caps_t;
+
+bool vaapi_profile_caps_init(vaapi_display_t *display);
+
+vaapi_profile_caps_t *vaapi_caps_from_profile(vaapi_display_t *display,
 		vaapi_profile_t profile);
 
 static const char * vaapi_rc_to_str(uint32_t rc)

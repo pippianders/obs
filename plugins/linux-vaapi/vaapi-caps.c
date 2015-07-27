@@ -3,6 +3,7 @@
 
 #include "vaapi-common.h"
 #include "vaapi-caps.h"
+#include "vaapi-internal.h"
 
 static const vaapi_profile_def_t vaapi_profile_defs[] = {
 	{ "constrained baseline", VAProfileH264ConstrainedBaseline,
@@ -31,8 +32,6 @@ static VAConfigAttrib vaapi_config_attribs[] = {
 static size_t vaapi_config_attribs_cnt =
 		  sizeof(vaapi_config_attribs)
 		/ sizeof(vaapi_config_attribs[0]);
-
-static DARRAY(vaapi_profile_caps_t) profiles_caps = {0};
 
 bool vaapi_caps_is_format_supported(vaapi_profile_caps_t *caps,
 		enum video_format format)
@@ -210,10 +209,11 @@ fail:
 	return false;
 }
 
-struct vaapi_profile_caps *vaapi_caps_from_profile(
+struct vaapi_profile_caps *vaapi_caps_from_profile(vaapi_display_t *display,
 		vaapi_profile_t profile)
 {
 	VAProfile p;
+
 	switch(profile)
 	{
 	case VAAPI_PROFILE_BASELINE_CONSTRAINED:
@@ -231,12 +231,12 @@ struct vaapi_profile_caps *vaapi_caps_from_profile(
 	vaapi_profile_t best_match = VAAPI_PROFILE_NONE;
 	vaapi_profile_caps_t *best_match_caps = NULL;
 
-	for(size_t i = 0; i < profiles_caps.num; i++) {
-		if (profiles_caps.array[i].def.va == p) {
-			return &profiles_caps.array[i];
-		} else if (profiles_caps.array[i].def.vaapi > best_match) {
-			best_match = profiles_caps.array[i].def.va;
-			best_match_caps = &profiles_caps.array[i];
+	for(size_t i = 0; i < display->caps.num; i++) {
+		if (display->caps.array[i].def.va == p) {
+			return &display->caps.array[i];
+		} else if (display->caps.array[i].def.vaapi > best_match) {
+			best_match = display->caps.array[i].def.va;
+			best_match_caps = &display->caps.array[i];
 		}
 	}
 
@@ -251,11 +251,11 @@ struct vaapi_profile_caps *vaapi_caps_from_profile(
 	return best_match_caps;
 }
 
-bool vaapi_caps_init()
+bool vaapi_profile_caps_init(vaapi_display_t *display)
 {
-	VADisplay display = vaapi_get_display();
-	da_resize(profiles_caps, 0);
-	int ep_max = vaMaxNumEntrypoints(display);
+	VADisplay va_display = display->display;
+	da_resize(display->caps, 0);
+	int ep_max = vaMaxNumEntrypoints(va_display);
 
 	VAEntrypoint *eps = bzalloc(sizeof(VAEntrypoint) * ep_max);
 	int eps_cnt;
@@ -265,7 +265,7 @@ bool vaapi_caps_init()
 		VAStatus status = 0;
 		bool valid_encoder;
 
-		status = vaQueryConfigEntrypoints(display,
+		status = vaQueryConfigEntrypoints(va_display,
 				vaapi_profile_defs[i].va, eps,
 				&eps_cnt);
 		if (status == VA_STATUS_ERROR_UNSUPPORTED_PROFILE)
@@ -277,7 +277,7 @@ bool vaapi_caps_init()
 
 		for(int j = 0; j < eps_cnt; j++) {
 			if (eps[j] == VAEntrypointEncSlice) {
-				if (apply_encoder_attrib(display,
+				if (apply_encoder_attrib(va_display,
 						vaapi_profile_defs[i].va,
 						eps[j], &p)) {
 					valid_encoder = true;
@@ -291,13 +291,7 @@ bool vaapi_caps_init()
 		if (!valid_encoder)
 			continue;
 
-		da_push_back(profiles_caps, &p);
-	}
-
-	VA_LOG(LOG_INFO, "Found %zu supported profiles",
-			profiles_caps.num);
-	for(size_t i = 0; i < profiles_caps.num; i++) {
-		vaapi_profile_caps_dump(&profiles_caps.array[i]);
+		da_push_back(display->caps, &p);
 	}
 
 	bfree(eps);
@@ -306,12 +300,6 @@ bool vaapi_caps_init()
 
 fail:
 	bfree(eps);
-	vaapi_caps_destroy();
 
 	return false;
-}
-
-void vaapi_caps_destroy()
-{
-	da_free(profiles_caps);
 }

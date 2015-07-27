@@ -11,6 +11,7 @@
 #include "surface-queue.h"
 #include "vaapi-caps.h"
 #include "vaapi-common.h"
+#include "vaapi-internal.h"
 #include "vaapi-encoder.h"
 
 #define SPS_PROFILE_IDC_BASELINE             66
@@ -59,6 +60,7 @@ enum nal_priority_e
 
 struct vaapi_encoder
 {
+	vaapi_display_t *vdisplay;
 	VADisplay display;
 	VAConfigID config;
 	VAContextID context;
@@ -115,16 +117,6 @@ void vaapi_encoder_destroy(vaapi_encoder_t *enc)
 		bfree(enc);
 	}
 }
-
-static VAConfigAttrib *get_caps_attr(vaapi_encoder_t *enc, VAConfigAttribType t)
-{
-	for(size_t i = 0; i < enc->caps->attribs_cnt; i++)
-		if (enc->caps->attribs[i].type == t)
-			return &enc->caps->attribs[i];
-
-}
-
-
 
 static bool apply_rate_control(vaapi_encoder_t *enc, VAConfigAttrib *a)
 {
@@ -189,10 +181,9 @@ fail:
 	return false;
 }
 
-bool vaapi_encoder_set_cpb_window(vaapi_encoder_t *enc, uint32_t cpb_window_ms)
+bool vaapi_encoder_set_cpb_size(vaapi_encoder_t *enc, uint32_t cpb_size)
 {
-	enc->cpb_window_ms = cpb_window_ms;
-	enc->cpb_size = (enc->bitrate_bits * enc->cpb_window_ms) / 1000;
+	enc->cpb_size = enc->bitrate_bits * enc->cpb_window_ms;
 
 	return true;
 }
@@ -202,9 +193,6 @@ bool vaapi_encoder_set_bitrate(vaapi_encoder_t *enc, uint32_t bitrate)
 	enc->bitrate = bitrate;
 	enc->bitrate_bits = bitrate * 1000;
 	enc->bitrate_bits &= ~((1U << HRD_BITRATE_SCALE) - 1);
-
-	// recalculate window size
-	vaapi_encoder_set_cpb_window(enc, enc->cpb_window_ms);
 
 	return true;
 }
@@ -221,7 +209,7 @@ static void init_sps(vaapi_encoder_t *enc)
 	height_in_mbs = (enc->height + 15) / 16;
 
 #define SPS enc->sps
-	SPS.level_idc = 30;
+	SPS.level_idc = 52;
 	SPS.intra_period = enc->intra_period;
 	SPS.bits_per_second = enc->bitrate_bits;
 	SPS.max_num_ref_frames = 4;
@@ -259,20 +247,6 @@ static void init_pps(vaapi_encoder_t *enc)
 			enc->caps->def.vaapi == VAAPI_PROFILE_HIGH;
 	PPS.pic_fields.bits.deblocking_filter_control_present_flag = 1;
 #undef PPS
-}
-
-static void initialize_defaults(vaapi_encoder_t *enc)
-{
-	float fps = (float)enc->framerate_num / enc->framerate_den;
-	enc->intra_period = fps * enc->keyint;
-	enc->qp = 26;
-	enc->cpb_window_ms = 1500;
-
-	vaapi_encoder_set_bitrate(enc, enc->bitrate);
-	vaapi_encoder_set_cpb_window(enc, 1500);
-
-	init_sps(enc);
-	init_pps(enc);
 }
 
 bool pack_pps(vaapi_encoder_t *enc, bitstream_t *bs)
@@ -334,11 +308,6 @@ bool pack_pps(vaapi_encoder_t *enc, bitstream_t *bs)
 #undef PIC
 }
 
-bool pack_sei(vaapi_encoder_t *enc, bitstream_t *bs)
-{
-
-}
-
 bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 {
 	int profile_idc;
@@ -392,7 +361,7 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 		// qpprime_y_zero_transform_bypass_flag
 		bs_append_bool(bs, false);
 		// scaling matrix not current supported
-		assert(SPS.seq_scaling_matrix_present_flag == 0);
+		assert(SPS_SEQ.seq_scaling_matrix_present_flag == 0);
 		bs_append_bits(bs, 1, SPS_SEQ.seq_scaling_matrix_present_flag);
 #undef SPS_SEQ
 	}
@@ -964,11 +933,24 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 
 	enc = bzalloc(sizeof(vaapi_encoder_t));
 
-	enc->display = vaapi_get_display();
+	enc->vdisplay = attribs->display;
+
+	// This display is currently closed
+	if (enc->vdisplay->display == NULL) {
+		if (!vaapi_display_open(enc->vdisplay)) {
+			const char *name = enc->vdisplay->name;
+			VA_LOG(LOG_ERROR, "unable to open '%s' device",
+					!!name ? name : "Undefined");
+			goto fail;
+		}
+	}
+
+	enc->display = attribs->display->display;
+
 	if (enc->display == NULL)
 		goto fail;
 
-	enc->caps = vaapi_caps_from_profile(attribs->profile);
+	enc->caps = vaapi_caps_from_profile(attribs->display, attribs->profile);
 	if (enc->caps == NULL) {
 		VA_LOG(LOG_ERROR, "failed to find any valid profiles for this "
 				" hardware");
@@ -987,7 +969,7 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 	enc->format                = attribs->format;
 	enc->rc                    = attribs->cbr ? VA_RC_CBR : VA_RC_VBR;
 
-	enc->surface_cnt         = attribs->surface_cnt;
+	enc->surface_cnt           = attribs->surface_cnt;
 	enc->coded_block_cb_opaque = attribs->coded_block_cb_opaque;
 	enc->coded_block_cb        = attribs->coded_block_cb;
 
@@ -1001,7 +983,18 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 		goto fail;
 	}
 
-	initialize_defaults(enc);
+	float fps = (float)enc->framerate_num / enc->framerate_den;
+	enc->intra_period = fps * enc->keyint;
+	enc->qp = 26;
+	vaapi_encoder_set_bitrate(enc, enc->bitrate);
+
+	if (attribs->use_custom_cpb_size)
+		vaapi_encoder_set_cpb_size(enc, attribs->cpb_size);
+	else
+		vaapi_encoder_set_cpb_size(enc, enc->bitrate);
+
+	init_sps(enc);
+	init_pps(enc);
 
 	enc->surfq = surface_queue_create(enc->display, enc->context,
 			enc->surface_cnt, enc->width, enc->height);

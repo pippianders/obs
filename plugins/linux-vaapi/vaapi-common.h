@@ -5,6 +5,8 @@
 
 #include <va/va.h>
 
+#include "vaapi-display.h"
+
 #define VA_LOG(level, format, ...) \
 	blog(level, "[VAAPI encoder]: " format, ##__VA_ARGS__)
 
@@ -51,4 +53,10 @@ struct coded_block_entry {
 };
 typedef struct coded_block_entry coded_block_entry_t;
 
-VADisplay vaapi_get_display();
+bool vaapi_initialize();
+void vaapi_shutdown();
+
+size_t vaapi_get_display_cnt();
+vaapi_display_t *vaapi_get_display(size_t index);
+vaapi_display_t *vaapi_find_display(vaapi_display_type_t type,
+		const char *path);
