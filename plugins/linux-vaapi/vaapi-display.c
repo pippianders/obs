@@ -126,6 +126,7 @@ bool vaapi_display_open(vaapi_display_t *d)
 
 fail:
 	vaapi_display_close(d);
+	return false;
 }
 
 void vaapi_display_destroy(vaapi_display_t *d)
@@ -135,6 +136,7 @@ void vaapi_display_destroy(vaapi_display_t *d)
 	da_free(d->caps);
 	bfree((char *)d->path);
 	bfree((char *)d->name);
+	pthread_mutex_destroy(&d->mutex);
 	bfree(d);
 }
 

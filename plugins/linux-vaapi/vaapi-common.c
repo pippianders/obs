@@ -74,5 +74,10 @@ bool vaapi_initialize()
 
 void vaapi_shutdown()
 {
-
+	for(size_t i = 0; i < vaapi_displays.num; i++) {
+		vaapi_display_t *d = vaapi_displays.array[i];
+		assert(d != NULL);
+		vaapi_display_destroy(d);
+	}
+	da_free(vaapi_displays);
 }

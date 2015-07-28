@@ -26,11 +26,7 @@ enum vaapi_format {
 };
 typedef enum vaapi_format vaapi_format_t;
 
-//typedef void(*vaapi_coded_block_cb)(void *opaque, void *data, int data_size,
-//		vaapi_slice_type_t slice_type);
-
 typedef void(*vaapi_coded_block_cb)(void *opaque, coded_block_entry_t *entry);
-
 
 struct vaapi_encoder_attribs
 {

@@ -175,6 +175,8 @@ static bool initialize_encoder(vaapi_encoder_t *enc)
 			enc->width, enc->height, enc->refpics.array,
 			enc->refpics.num, NULL, 0), 1);
 
+	da_free(encoder_attribs);
+
 	return true;
 
 fail1:
@@ -182,6 +184,7 @@ fail1:
 
 fail:
 	vaDestroyConfig(enc->display, enc->config);
+	da_free(encoder_attribs);
 
 	return false;
 }
@@ -272,10 +275,10 @@ bool pack_pps(vaapi_encoder_t *enc, bitstream_t *bs)
 
 	APPEND_PFB(1, entropy_coding_mode_flag);
 
-	/* pic_order_present_flag: 0 */
+	// pic_order_present_flag
 	bs_append_bool(bs, false);
 
-	/* num_slice_groups_minus1 */
+	// num_slice_groups_minus1
 	bs_append_ue(bs, 0);
 
 	// num_ref_idx_l0_active_minus1
