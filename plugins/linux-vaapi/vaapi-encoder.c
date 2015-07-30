@@ -14,6 +14,8 @@
 #include "vaapi-internal.h"
 #include "vaapi-encoder.h"
 
+#define DEBUG_H264
+
 #define SPS_PROFILE_IDC_BASELINE             66
 #define SPS_PROFILE_IDC_MAIN                 77
 #define SPS_PROFILE_IDC_HIGH                 100
@@ -34,7 +36,7 @@ enum chroma_formats {
 	SPS_CHROMA_FORMAT_444        = 3,
 };
 
-enum nal_unit_type_e
+enum nal_unit_type
 {
     NAL_UNKNOWN     = 0,
     NAL_SLICE       = 1,
@@ -50,12 +52,18 @@ enum nal_unit_type_e
     /* ref_idc == 0 for 6,9,10,11,12 */
 };
 
-enum nal_priority_e
+enum nal_priority
 {
     NAL_PRIORITY_DISPOSABLE = 0,
     NAL_PRIORITY_LOW        = 1,
     NAL_PRIORITY_HIGH       = 2,
     NAL_PRIORITY_HIGHEST    = 3,
+};
+
+enum sei_type
+{
+  SEI_BUF_PERIOD = 0,
+  SEI_PIC_TIMING = 1
 };
 
 struct vaapi_encoder
@@ -91,6 +99,7 @@ struct vaapi_encoder
 	VAEncSliceParameterBufferH264 slice;
 
 	uint64_t frame_cnt;
+	uint64_t gop_idx;
 	uint32_t output_buf_size;
 
 	uint32_t surface_cnt;
@@ -216,6 +225,7 @@ static void init_sps(vaapi_encoder_t *enc)
 	int width_in_mbs, height_in_mbs;
 	int frame_cropping_flag = 0;
 	int frame_crop_bottom_offset = 0;
+	int frame_crop_right_offset = 0;
 
 	width_in_mbs = (enc->width + 15) / 16;
 	height_in_mbs = (enc->height + 15) / 16;
@@ -241,8 +251,15 @@ static void init_sps(vaapi_encoder_t *enc)
 				(height_in_mbs * 16 - enc->height) / 2;
 	}
 
+	if (width_in_mbs * 16 - enc->width > 0) {
+		frame_cropping_flag = 1;
+		frame_crop_right_offset =
+				(width_in_mbs * 16 - enc->width) / 2;
+	}
+
 	SPS.frame_cropping_flag = frame_cropping_flag;
 	SPS.frame_crop_bottom_offset = frame_crop_bottom_offset;
+	SPS.frame_crop_right_offset = frame_crop_right_offset;
 
 	SPS.seq_fields.bits.log2_max_pic_order_cnt_lsb_minus4 = 2;
 
@@ -505,6 +522,69 @@ fail:
 #undef SPS
 }
 
+static bool pack_sei_buf_period(vaapi_encoder_t *enc, bitstream_t *bs)
+{
+	int initial_cpb_removal_delay =
+		((enc->cpb_window_ms / 2) * 90000) / 1000;
+	int initial_cpb_removal_delay_offset = 0;
+	int sequence_parameter_set_id = 0;
+
+	bs_append_ue(bs, sequence_parameter_set_id);
+	bs_append_bits(bs, HRD_INIT_CPB_REM_DELAY_LEN,
+			initial_cpb_removal_delay);
+	bs_append_bits(bs, 24, initial_cpb_removal_delay_offset);
+
+	bs_append_trailing_bits(bs);
+
+	return true;
+}
+
+static bool pack_sei_pic_timing(vaapi_encoder_t *enc, bitstream_t *bs)
+{
+	int cpb_removal_delay = (enc->gop_idx % enc->intra_period) * 2 + 2;
+	int dpb_removal_delay = 0;
+	int pic_struct = 0;
+	bool clock_timestamp_flag = false;
+	bool pic_struct_present_flag = true;
+
+	bs_append_bits(bs, HRD_INIT_CPB_REM_DELAY_LEN, cpb_removal_delay);
+	bs_append_bits(bs, HRD_DPB_OUTPUT_DELAY_LEN, dpb_removal_delay);
+
+	if (pic_struct_present_flag) {
+		bs_append_bits(bs, 4, pic_struct);
+		bs_append_bool(bs, clock_timestamp_flag);
+	}
+
+	bs_append_trailing_bits(bs);
+
+	return true;
+}
+
+static bool pack_sei(vaapi_encoder_t *enc, bitstream_t *bs)
+{
+	bitstream_t *sei_bs = bs_create();
+
+	bs_begin_nalu(bs, NAL_SEI, NAL_PRIORITY_DISPOSABLE);
+
+	bs_reset(sei_bs);
+	pack_sei_buf_period(enc, sei_bs);
+	bs_append_bits(bs, 8, SEI_BUF_PERIOD);
+	bs_append_bits(bs, 8, bs_size(sei_bs));
+	bs_append_bs(bs, sei_bs);
+
+	bs_reset(sei_bs);
+	pack_sei_pic_timing(enc, sei_bs);
+	bs_append_bits(bs, 8, SEI_PIC_TIMING);
+	bs_append_bits(bs, 8, bs_size(sei_bs));
+	bs_append_bs(bs, sei_bs);
+
+	bs_end_nalu(bs);
+
+	bs_free(sei_bs);
+
+	return true;
+}
+
 static bool create_buffer(vaapi_encoder_t *enc, VABufferType type,
 		unsigned int size, unsigned int num_elements, void *data,
 		struct darray *list)
@@ -628,7 +708,7 @@ static bool create_misc_rc_buffer(vaapi_encoder_t *enc,
 	rc.window_size = enc->cpb_window_ms;
 	rc.initial_qp = enc->qp;
 	rc.min_qp = enc->qp;
-	rc.rc_flags.bits.disable_frame_skip = true;
+	rc.rc_flags.bits.disable_frame_skip = false;
 
 	if (!create_misc_buffer(enc, VAEncMiscParameterTypeRateControl,
 			sizeof(rc), &rc, list)) {
@@ -665,26 +745,30 @@ static bool create_pic_buffer(vaapi_encoder_t *enc, buffer_list_t *list,
 
 #define PPS enc->pps
 
-	curr_pic = enc->refpics.array[enc->frame_cnt % 2];
-	pic0 = enc->refpics.array[(enc->frame_cnt + 1) % 2];
+	curr_pic = enc->refpics.array[enc->gop_idx % 2];
+	pic0 = enc->refpics.array[(enc->gop_idx + 1) % 2];
 
 	PPS.CurrPic.picture_id = curr_pic;
-	PPS.CurrPic.frame_idx = enc->frame_cnt;
+	PPS.CurrPic.frame_idx = enc->gop_idx;
 	PPS.CurrPic.flags = 0;
 
-	PPS.CurrPic.TopFieldOrderCnt = enc->frame_cnt * 2;
+	PPS.CurrPic.TopFieldOrderCnt = enc->gop_idx * 2;
 	PPS.CurrPic.BottomFieldOrderCnt = PPS.CurrPic.TopFieldOrderCnt;
+
+#define REF_FRAME_SIZE \
+	(sizeof(PPS.ReferenceFrames) / sizeof(PPS.ReferenceFrames[0]))
 
 	PPS.ReferenceFrames[0].picture_id = pic0;
 	PPS.ReferenceFrames[1].picture_id = enc->refpics.array[2];
-	PPS.ReferenceFrames[2].picture_id = VA_INVALID_ID;
+	for(size_t i = 2; i < REF_FRAME_SIZE; i++)
+		PPS.ReferenceFrames[i].picture_id = VA_INVALID_ID;
+#undef REF_FRAME_SIZE
 
 	PPS.coded_buf = output_buf;
-	PPS.frame_num = enc->frame_cnt;
+	PPS.frame_num = enc->gop_idx;
 	PPS.pic_init_qp = enc->qp;
 
-	PPS.pic_fields.bits.idr_pic_flag =
-			(enc->frame_cnt % enc->intra_period) == 0;
+	PPS.pic_fields.bits.idr_pic_flag = enc->gop_idx == 0;
 	PPS.pic_fields.bits.reference_pic_flag = 1;
 
 	if (!create_buffer(enc, VAEncPictureParameterBufferType,
@@ -770,6 +854,20 @@ static void encode_nalu_to_extra_data(vaapi_encoder_t *enc, bitstream_t *bs)
 	da_push_back(enc->extra_data, (data + size - 1));
 }
 
+
+static bool create_sei_buffer(vaapi_encoder_t *enc,
+		buffer_list_t *list)
+{
+	bitstream_t *bs = bs_create();
+
+	pack_sei(enc, bs);
+	create_packed_header_buffers(enc, list, VAEncPackedHeaderH264_SEI, bs);
+
+	bs_free(bs);
+
+	return true;
+}
+
 static bool create_packed_sps_pps_buffers(vaapi_encoder_t *enc,
 		buffer_list_t *list)
 {
@@ -825,7 +923,7 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 	vaapi_slice_type_t slice_type;
 
 	// todo: implement b frame handling
-	if ((enc->frame_cnt % enc->intra_period) == 0)
+	if ((enc->gop_idx % enc->intra_period) == 0)
 		slice_type = VAAPI_SLICE_TYPE_I;
 	else
 		slice_type = VAAPI_SLICE_TYPE_P;
@@ -837,10 +935,12 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 		goto fail;
 	if (!create_misc_rc_buffer(enc, &buffers.da))
 		goto fail;
+	if (!!(enc->rc & VA_RC_CBR) && !create_sei_buffer(enc, &buffers.da))
+		goto fail;
 	if (!create_slice_buffer(enc, &buffers.da, slice_type))
 		goto fail;
 
-	if (enc->frame_cnt == 0)
+	if ((enc->frame_cnt % enc->intra_period) == 0)
 		if (!create_packed_sps_pps_buffers(enc, &buffers.da))
 			goto fail;
 
@@ -861,6 +961,8 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 		goto fail;
 
 	enc->frame_cnt++;
+	enc->gop_idx++;
+
 	return true;
 
 fail:

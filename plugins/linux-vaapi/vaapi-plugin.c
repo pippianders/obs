@@ -2,10 +2,14 @@
 #include <util/darray.h>
 #include <util/platform.h>
 
-#include <stdio.h>
-
 #include "vaapi-encoder.h"
 #include "vaapi-caps.h"
+
+#define DEBUG_H264
+#ifdef DEBUG_H264
+#include <stdio.h>
+#endif
+
 
 struct vaapi_enc
 {
@@ -29,6 +33,12 @@ struct vaapi_enc
 	vaapi_slice_type_t packet_slice_type;
 	uint64_t packet_pts;
 	DARRAY(uint8_t) packet;
+
+#ifdef DEBUG_H264
+	FILE *debug_file;
+	bool header;
+#endif
+
 };
 
 static void vaapi_enc_video_info(void *data,
@@ -124,6 +134,11 @@ void coded_block(void *opaque, coded_block_entry_t *e)
 	enc->packet_slice_type = e->type;
 	enc->packet_pts = e->pts;
 
+	#ifdef DEBUG_H264
+	fwrite(enc->packet.array, sizeof(uint8_t), enc->packet.num,
+			enc->debug_file);
+	#endif
+
 	da_free(e->data);
 }
 
@@ -162,6 +177,11 @@ static void vaapi_enc_destroy(void *data)
 		if (enc->vaapi_encoder != NULL)
 			vaapi_encoder_destroy(enc->vaapi_encoder);
 		da_free(enc->packet);
+
+#ifdef DEBUG_H264
+		fclose(enc->debug_file);
+#endif
+
 		bfree(enc);
 	}
 }
@@ -198,6 +218,10 @@ static void *vaapi_enc_create(obs_data_t *settings,
 
 	if (enc->vaapi_encoder == NULL)
 		goto fail;
+
+#ifdef DEBUG_H264
+	enc->debug_file = fopen("/home/jrb/Videos/out.h264", "wb");
+#endif
 
 	return enc;
 

@@ -115,6 +115,12 @@ void bs_append_se(bitstream_t *bs, int32_t val)
 		bs_append_ue(bs, -val * 2);
 }
 
+void bs_append_bs(bitstream_t *bs, bitstream_t *src)
+{
+	for(size_t i = 0; i < src->buf.num; i++)
+		bs_append_bits(bs, 8, src->buf.array[i]);
+}
+
 void bs_begin_nalu(bitstream_t *bs, uint32_t nalu_type,
 		uint32_t nal_ref_idc)
 {
@@ -125,11 +131,16 @@ void bs_begin_nalu(bitstream_t *bs, uint32_t nalu_type,
 	bs_flush(bs);
 }
 
+void bs_append_trailing_bits(bitstream_t *bs)
+{
+	bs_append_bits(bs, bs->cache_rem % 8, 0);
+	bs_flush(bs);
+}
+
 void bs_end_nalu(bitstream_t *bs)
 {
 	bs_append_bits(bs, 1, 1);
-	bs_append_bits(bs, bs->cache_rem % 8, 0);
-	bs_flush(bs);
+	bs_append_trailing_bits(bs);
 }
 
 void bs_reset(bitstream_t *bs)
