@@ -5,11 +5,10 @@
 #include "vaapi-encoder.h"
 #include "vaapi-caps.h"
 
-#define DEBUG_H264
+//#define DEBUG_H264
 #ifdef DEBUG_H264
 #include <stdio.h>
 #endif
-
 
 struct vaapi_enc
 {
@@ -23,7 +22,11 @@ struct vaapi_enc
 	uint32_t height;
 	uint32_t framerate_num;
 	uint32_t framerate_den;
-	bool cbr;
+	vaapi_rc_t rc_type;
+	uint32_t min_qp;
+	uint32_t qp;
+	uint32_t max_qp_delta;
+
 	vaapi_profile_t profile;
 
 	enum video_format format;
@@ -75,13 +78,15 @@ static void update_params(struct vaapi_enc *enc, obs_data_t *settings)
 			"buffer_size");
 	uint32_t keyint_sec   = (uint32_t)obs_data_get_int(settings,
 			"keyint_sec");
-	uint32_t crf          = (uint32_t)obs_data_get_int(settings, "crf");
 	uint32_t width        = (uint32_t)obs_encoder_get_width(enc->encoder);
 	uint32_t height       = (uint32_t)obs_encoder_get_height(enc->encoder);
 	bool use_bufsize      = obs_data_get_bool(settings, "use_bufsize");
-	bool vfr              = obs_data_get_bool(settings, "vfr");
-	bool cbr              = obs_data_get_bool(settings, "cbr");
-
+	vaapi_rc_t rc_type    = (vaapi_rc_t)obs_data_get_int(settings,
+			"rc_type");
+	uint32_t min_qp       = (uint32_t)obs_data_get_int(settings, "min_qp");
+	uint32_t qp           = (uint32_t)obs_data_get_int(settings, "qp");
+	uint32_t max_qp_delta = (uint32_t)obs_data_get_int(settings,
+			"max_qp_delta");
 	vaapi_profile_t profile = (vaapi_profile_t)obs_data_get_int(settings,
 			"profile");
 
@@ -94,7 +99,10 @@ static void update_params(struct vaapi_enc *enc, obs_data_t *settings)
 	enc->height = height;
 	enc->framerate_num = voi->fps_num;
 	enc->framerate_den = voi->fps_den;
-	enc->cbr = cbr;
+	enc->rc_type = rc_type;
+	enc->min_qp = min_qp;
+	enc->qp = qp;
+	enc->max_qp_delta = max_qp_delta;
 
 	enc->profile = profile;
 }
@@ -115,6 +123,9 @@ static bool vaapi_enc_extra_data(void *data, uint8_t **extra_data, size_t *size)
 
 static bool vaapi_enc_sei(void *data, uint8_t **sei, size_t *size)
 {
+	UNUSED_PARAMETER(data);
+	UNUSED_PARAMETER(sei);
+	UNUSED_PARAMETER(size);
 	return false;
 }
 
@@ -200,11 +211,14 @@ static void *vaapi_enc_create(obs_data_t *settings,
 		.width = enc->width,
 		.height = enc->height,
 		.bitrate = enc->bitrate,
-		.cbr = enc->cbr,
+		.rc_type = enc->rc_type,
+		.min_qp = enc->min_qp,
+		.qp = enc->qp,
+		.max_qp_delta = enc->max_qp_delta,
 		.framerate_num = enc->framerate_num,
 		.framerate_den = enc->framerate_den,
 		.keyint = enc->keyint_sec,
-		.use_custom_cpb_size = enc->use_bufsize,
+		.use_custom_cpb = enc->use_bufsize,
 		.cpb_size = enc->buffer_size,
 		.cpb_window_ms = 1500,
 		.refpic_cnt = 3,
@@ -231,34 +245,78 @@ fail:
 	return NULL;
 }
 
-#define TEXT_BITRATE     obs_module_text("Bitrate")
-#define TEXT_CUSTOM_BUF  obs_module_text("CustomBufsize")
-#define TEXT_BUF_SIZE    obs_module_text("BufferSize")
-#define TEXT_USE_CBR     obs_module_text("UseCBR")
-#define TEXT_CRF         obs_module_text("CRF")
-#define TEXT_KEYINT_SEC  obs_module_text("KeyframeIntervalSec")
-#define TEXT_PROFILE     obs_module_text("Profile")
-#define TEXT_NONE        obs_module_text("None")
-#define TEXT_DEVICE_TYPE obs_module_text("DeviceType")
-#define TEXT_X11_DEVICE  obs_module_text("X11")
-#define TEXT_DRM_DEVICE  obs_module_text("DRMDevice")
-#define TEXT_DEVICE      obs_module_text("Device")
+#define TEXT_BITRATE      obs_module_text("Bitrate")
+#define TEXT_CUSTOM_BUF   obs_module_text("CustomBufsize")
+#define TEXT_BUF_SIZE     obs_module_text("BufferSize")
+#define TEXT_RC_TYPE      obs_module_text("RCType")
+#define TEXT_RC_CBR       obs_module_text("RCTypeCBR")
+#define TEXT_RC_CQP       obs_module_text("RCTypeCQP")
+#define TEXT_RC_VBR       obs_module_text("RCTypeVBR")
+#define TEXT_RC_VBR_CON   obs_module_text("RCTypeVBRConstrained")
+#define TEXT_QP           obs_module_text("QP")
+#define TEXT_MIN_QP       obs_module_text("MinQP")
+#define TEXT_MAX_QP_DELTA obs_module_text("MaxQPDelta")
+#define TEXT_KEYINT_SEC   obs_module_text("KeyframeIntervalSec")
+#define TEXT_PROFILE      obs_module_text("Profile")
+#define TEXT_NONE         obs_module_text("None")
+#define TEXT_DEVICE_TYPE  obs_module_text("DeviceType")
+#define TEXT_X11_DEVICE   obs_module_text("X11")
+#define TEXT_DRM_DEVICE   obs_module_text("DRMDevice")
+#define TEXT_DEVICE       obs_module_text("Device")
+
+static void set_visible(obs_properties_t *ppts, const char *name, bool visible)
+{
+	obs_property_t *p = obs_properties_get(ppts, name);
+	obs_property_set_visible(p, visible);
+}
 
 static bool use_bufsize_modified(obs_properties_t *ppts, obs_property_t *p,
 		obs_data_t *settings)
 {
+	UNUSED_PARAMETER(p);
+
 	bool use_bufsize = obs_data_get_bool(settings, "use_bufsize");
-	p = obs_properties_get(ppts, "buffer_size");
-	obs_property_set_visible(p, use_bufsize);
+	set_visible(ppts, "buffer_size", use_bufsize);
+
 	return true;
 }
 
-static bool use_cbr_modified(obs_properties_t *ppts, obs_property_t *p,
+static bool rc_type_modified(obs_properties_t *ppts, obs_property_t *p,
 		obs_data_t *settings)
 {
-	bool cbr = obs_data_get_bool(settings, "cbr");
-	p = obs_properties_get(ppts, "crf");
-	obs_property_set_visible(p, !cbr);
+	UNUSED_PARAMETER(p);
+
+	vaapi_rc_t rc_type = (vaapi_rc_t)obs_data_get_int(settings, "rc_type");
+
+	set_visible(ppts, "bitrate", false);
+	set_visible(ppts, "use_bufsize", false);
+	set_visible(ppts, "buffer_size", false);
+	set_visible(ppts, "min_qp", false);
+	set_visible(ppts, "qp", false);
+	set_visible(ppts, "max_qp_delta", false);
+
+	if (rc_type == VAAPI_RC_CBR)
+		set_visible(ppts, "bitrate", true);
+
+	if (rc_type == VAAPI_RC_CBR ||
+	    rc_type == VAAPI_RC_VBR ||
+	    rc_type == VAAPI_RC_VBR_CONSTRAINED) {
+		set_visible(ppts, "use_bufsize", true);
+		use_bufsize_modified(ppts, NULL, settings);
+	}
+
+	if (rc_type == VAAPI_RC_CQP ||
+	    rc_type == VAAPI_RC_VBR ||
+	    rc_type == VAAPI_RC_VBR_CONSTRAINED) {
+		set_visible(ppts, "qp", true);
+	}
+
+	if (rc_type == VAAPI_RC_VBR ||
+	    rc_type == VAAPI_RC_VBR_CONSTRAINED) {
+		set_visible(ppts, "min_qp", true);
+		set_visible(ppts, "max_qp_delta", true);
+	}
+
 	return true;
 }
 
@@ -298,19 +356,6 @@ static obs_properties_t *vaapi_enc_props(void *unused)
 	obs_properties_add_list(props, "device", TEXT_DEVICE,
 			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
-	obs_properties_add_int(props, "bitrate", TEXT_BITRATE, 50, 10000000, 1);
-
-	p = obs_properties_add_bool(props, "use_bufsize", TEXT_CUSTOM_BUF);
-	obs_property_set_modified_callback(p, use_bufsize_modified);
-	obs_properties_add_int(props, "buffer_size", TEXT_BUF_SIZE, 0,
-			10000000, 1);
-
-	obs_properties_add_int(props, "keyint_sec", TEXT_KEYINT_SEC, 1, 20, 1);
-	p = obs_properties_add_bool(props, "cbr", TEXT_USE_CBR);
-	obs_properties_add_int(props, "crf", TEXT_CRF, 0, 51, 1);
-
-	obs_property_set_modified_callback(p, use_cbr_modified);
-
 	list = obs_properties_add_list(props, "profile", TEXT_PROFILE,
 			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(list, TEXT_NONE, VAAPI_PROFILE_NONE);
@@ -318,20 +363,47 @@ static obs_properties_t *vaapi_enc_props(void *unused)
 	obs_property_list_add_int(list, "main", VAAPI_PROFILE_MAIN);
 	obs_property_list_add_int(list, "high", VAAPI_PROFILE_HIGH);
 
+	obs_properties_add_int(props, "keyint_sec", TEXT_KEYINT_SEC, 1, 20, 1);
+
+	list = obs_properties_add_list(props, "rc_type", TEXT_RC_TYPE,
+			OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(list, TEXT_RC_CBR, VAAPI_RC_CBR);
+	obs_property_list_add_int(list, TEXT_RC_CQP, VAAPI_RC_CQP);
+	obs_property_list_add_int(list, TEXT_RC_VBR, VAAPI_RC_VBR);
+	obs_property_list_add_int(list, TEXT_RC_VBR_CON,
+			VAAPI_RC_VBR_CONSTRAINED);
+
+	obs_property_set_modified_callback(list, rc_type_modified);
+
+	obs_properties_add_int(props, "bitrate", TEXT_BITRATE, 50, 10000000, 1);
+
+	p = obs_properties_add_bool(props, "use_bufsize", TEXT_CUSTOM_BUF);
+	obs_property_set_modified_callback(p, use_bufsize_modified);
+	obs_properties_add_int(props, "buffer_size", TEXT_BUF_SIZE, 0,
+			10000000, 1);
+
+	obs_properties_add_int(props, "min_qp", TEXT_MIN_QP, 1, 51, 1);
+	obs_properties_add_int(props, "qp", TEXT_QP, 1, 51, 1);
+	obs_properties_add_int(props, "max_qp_delta",
+			TEXT_MAX_QP_DELTA, 1, 10, 1);
+
 	return props;
 }
 
 static void vaapi_enc_defaults(obs_data_t *settings)
 {
-	obs_data_set_default_int   (settings, "device_type", VAAPI_DISPLAY_X);
-	obs_data_set_default_string(settings, "device",      "");
-	obs_data_set_default_int   (settings, "bitrate",     2500);
-	obs_data_set_default_bool  (settings, "use_bufsize", false);
-	obs_data_set_default_int   (settings, "buffer_size", 2500);
-	obs_data_set_default_int   (settings, "keyint_sec",  2);
-	obs_data_set_default_int   (settings, "crf",         23);
-	obs_data_set_default_bool  (settings, "cbr",         true);
-	obs_data_set_default_int   (settings, "profile",     0);
+	obs_data_set_default_int   (settings, "device_type",  VAAPI_DISPLAY_X);
+	obs_data_set_default_string(settings, "device",       "");
+	obs_data_set_default_int   (settings, "bitrate",      2500);
+	obs_data_set_default_bool  (settings, "use_bufsize",  false);
+	obs_data_set_default_int   (settings, "buffer_size",  2500);
+	obs_data_set_default_int   (settings, "keyint_sec",   2);
+	obs_data_set_default_int   (settings, "qp",           26);
+	obs_data_set_default_int   (settings, "min_qp",       1);
+	obs_data_set_default_int   (settings, "max_qp_delta", 4);
+	obs_data_set_default_bool  (settings, "rc_type",      VAAPI_RC_CBR);
+	obs_data_set_default_int   (settings, "profile",
+			VAAPI_PROFILE_MAIN);
 }
 
 struct obs_encoder_info obs_vaapi_encoder = {

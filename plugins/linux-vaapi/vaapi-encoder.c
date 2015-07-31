@@ -14,22 +14,28 @@
 #include "vaapi-internal.h"
 #include "vaapi-encoder.h"
 
-#define DEBUG_H264
+// SPS Constants
+enum {
+	SPS_PROFILE_IDC_BASELINE     = 66,
+	SPS_PROFILE_IDC_MAIN         = 77,
+	SPS_PROFILE_IDC_HIGH         = 100,
+};
 
-#define SPS_PROFILE_IDC_BASELINE             66
-#define SPS_PROFILE_IDC_MAIN                 77
-#define SPS_PROFILE_IDC_HIGH                 100
+// CPB Constants
+enum {
+	HRD_DEFAULT_CPB_WINDOW_SIZE  = 1500
+};
 
 // HRD Constants (E.2.2)
 enum {
-	HRD_BITRATE_SCALE          = 6,  // E-37
-	HRD_CPB_SIZE_SCALE         = 4,  // E-38
-	HRD_INIT_CPB_REM_DELAY_LEN = 24,
-	HRD_DPB_OUTPUT_DELAY_LEN   = 24,
-	HRD_TIME_OFFSET_LEN        = 24
+	HRD_BITRATE_SCALE            = 6, // E-37
+	HRD_CPB_SIZE_SCALE           = 4, // E-38
+	HRD_INIT_CPB_REM_DELAY_LEN   = 24,
+	HRD_DPB_OUTPUT_DELAY_LEN     = 24,
+	HRD_TIME_OFFSET_LEN          = 24
 };
 
-enum chroma_formats {
+enum {
 	SPS_CHROMA_FORMAT_MONOCHROME = 0,
 	SPS_CHROMA_FORMAT_420        = 1,
 	SPS_CHROMA_FORMAT_422        = 2,
@@ -78,21 +84,30 @@ struct vaapi_encoder
 
 	vaapi_profile_caps_t *caps;
 
-	uint32_t bitrate;
-	uint32_t bitrate_bits;
-	uint32_t rc;
-	uint32_t height;
 	uint32_t width;
+	uint32_t height;
+	uint32_t width_in_mbs;
+	uint32_t height_in_mbs;
+
 	uint32_t keyint;
 	uint32_t framerate_num;
 	uint32_t framerate_den;
 	vaapi_format_t format;
 
 	uint32_t intra_period;
-	uint32_t cpb_window_ms;
-	uint32_t cpb_size;
-	uint32_t cpb_size_bits;
-	uint32_t qp;
+
+	struct {
+		vaapi_rc_t type;
+		uint32_t bitrate;
+		uint32_t bitrate_bits;
+		uint32_t qp;
+		uint32_t min_qp;
+		uint32_t max_qp_delta;
+		bool use_custom_cpb;
+		uint32_t cpb_window_ms;
+		uint32_t cpb_size;
+		uint32_t cpb_size_bits;
+	} rc;
 
 	VAEncSequenceParameterBufferH264 sps;
 	VAEncPictureParameterBufferH264 pps;
@@ -132,15 +147,28 @@ void vaapi_encoder_destroy(vaapi_encoder_t *enc)
 	}
 }
 
-static bool apply_rate_control(vaapi_encoder_t *enc, VAConfigAttrib *a)
+static uint32_t vaapi_rc_to_va_rc(vaapi_rc_t rc)
 {
-	if ((a->value & enc->rc) == 0) {
+	switch(rc)
+	{
+		case VAAPI_RC_CBR: return VA_RC_CBR;
+		case VAAPI_RC_CQP: return VA_RC_CQP;
+		case VAAPI_RC_VBR: return VA_RC_VBR;
+		case VAAPI_RC_VBR_CONSTRAINED: return VA_RC_VBR_CONSTRAINED;
+		default: return VA_RC_NONE;
+	}
+}
+
+static bool prepare_rate_control(vaapi_encoder_t *enc, VAConfigAttrib *a)
+{
+	uint32_t va_rc = vaapi_rc_to_va_rc(enc->rc.type);
+	if ((a->value & va_rc) == 0) {
 		VA_LOG(LOG_ERROR, "hardware doesn't support specified '%s'",
-				vaapi_rc_to_str(enc->rc));
+				va_rc_to_str(enc->rc.type));
 		return false;
 	}
 
-	a->value &= enc->rc;
+	a->value &= va_rc;
 
 	return true;
 }
@@ -152,7 +180,7 @@ static bool prepare_encoder_attributes(vaapi_encoder_t *enc,
 		switch (enc->caps->attribs[i].type)
 		{
 		case VAConfigAttribRateControl:
-			if (!apply_rate_control(enc, &attr))
+			if (!prepare_rate_control(enc, &attr))
 				return false;
 			break;
 		default: // todo: add config to str; ignore for now
@@ -200,20 +228,22 @@ fail:
 
 #define HRD_SCALE(scale) (~((1U << scale) - 1))
 
-bool vaapi_encoder_set_cpb_size(vaapi_encoder_t *enc, uint32_t cpb_size)
+bool vaapi_encoder_set_cpb(vaapi_encoder_t *enc, uint32_t cpb_window_ms,
+		uint32_t cpb_size)
 {
-	enc->cpb_size = cpb_size;
-	enc->cpb_size_bits = cpb_size * enc->cpb_window_ms;
-	enc->cpb_size_bits &= HRD_SCALE(HRD_CPB_SIZE_SCALE);
+	enc->rc.cpb_window_ms = cpb_window_ms;
+	enc->rc.cpb_size = cpb_size;
+	enc->rc.cpb_size_bits = cpb_size * cpb_window_ms;
+	enc->rc.cpb_size_bits &= HRD_SCALE(HRD_CPB_SIZE_SCALE);
 
 	return true;
 }
 
 bool vaapi_encoder_set_bitrate(vaapi_encoder_t *enc, uint32_t bitrate)
 {
-	enc->bitrate = bitrate;
-	enc->bitrate_bits = bitrate * 1000;
-	enc->bitrate_bits &= HRD_SCALE(HRD_BITRATE_SCALE);
+	enc->rc.bitrate = bitrate;
+	enc->rc.bitrate_bits = bitrate * 1000;
+	enc->rc.bitrate_bits &= HRD_SCALE(HRD_BITRATE_SCALE);
 
 	return true;
 }
@@ -222,21 +252,17 @@ static void init_sps(vaapi_encoder_t *enc)
 {
 	memset(&enc->sps, 0, sizeof(VAEncSequenceParameterBufferH264));
 
-	int width_in_mbs, height_in_mbs;
 	int frame_cropping_flag = 0;
 	int frame_crop_bottom_offset = 0;
 	int frame_crop_right_offset = 0;
 
-	width_in_mbs = (enc->width + 15) / 16;
-	height_in_mbs = (enc->height + 15) / 16;
-
 #define SPS enc->sps
 	SPS.level_idc = 52;
 	SPS.intra_period = enc->intra_period;
-	SPS.bits_per_second = enc->bitrate_bits;
+	SPS.bits_per_second = enc->rc.bitrate_bits;
 	SPS.max_num_ref_frames = 4;
-	SPS.picture_width_in_mbs = width_in_mbs;
-	SPS.picture_height_in_mbs = height_in_mbs;
+	SPS.picture_width_in_mbs = enc->width_in_mbs;
+	SPS.picture_height_in_mbs = enc->height_in_mbs;
 	SPS.seq_fields.bits.frame_mbs_only_flag = 1;
 	SPS.seq_fields.bits.chroma_format_idc = SPS_CHROMA_FORMAT_420;
 
@@ -245,16 +271,16 @@ static void init_sps(vaapi_encoder_t *enc)
 	SPS.vui_fields.bits.timing_info_present_flag = true;
 	SPS.vui_fields.bits.bitstream_restriction_flag = true;
 
-	if (height_in_mbs * 16 - enc->height > 0) {
+	if (enc->height_in_mbs * 16 - enc->height > 0) {
 		frame_cropping_flag = 1;
 		frame_crop_bottom_offset =
-				(height_in_mbs * 16 - enc->height) / 2;
+				(enc->height_in_mbs * 16 - enc->height) / 2;
 	}
 
-	if (width_in_mbs * 16 - enc->width > 0) {
+	if (enc->width_in_mbs * 16 - enc->width > 0) {
 		frame_cropping_flag = 1;
 		frame_crop_right_offset =
-				(width_in_mbs * 16 - enc->width) / 2;
+				(enc->width_in_mbs * 16 - enc->width) / 2;
 	}
 
 	SPS.frame_cropping_flag = frame_cropping_flag;
@@ -269,7 +295,7 @@ static void init_sps(vaapi_encoder_t *enc)
 static void init_pps(vaapi_encoder_t *enc)
 {
 #define PPS enc->pps
-	PPS.pic_init_qp = enc->qp;
+	PPS.pic_init_qp = enc->rc.qp;
 
 	PPS.pic_fields.bits.entropy_coding_mode_flag =
 			enc->caps->def.vaapi == VAAPI_PROFILE_MAIN ||
@@ -459,13 +485,13 @@ bool pack_sps(vaapi_encoder_t *enc, bitstream_t *bs)
 		// cpb_size_scale
 		bs_append_bits(bs, 4, 0 /*default*/);
 		for(int i = 0; i <= cpb_cnt_minus1; i++) {
-			uint32_t bit_rate_scale = enc->bitrate_bits;
+			uint32_t bit_rate_scale = enc->rc.bitrate_bits;
 			bit_rate_scale >>= HRD_BITRATE_SCALE;
 			bs_append_ue(bs, bit_rate_scale - 1);
-			uint32_t cpb_size_scale = enc->cpb_size_bits;
+			uint32_t cpb_size_scale = enc->rc.cpb_size_bits;
 			cpb_size_scale >>= HRD_CPB_SIZE_SCALE;
 			bs_append_ue(bs, cpb_size_scale - 1);
-			bs_append_bool(bs, !!(enc->rc & VA_RC_CBR));
+			bs_append_bool(bs, enc->rc.type == VAAPI_RC_CBR);
 		}
 		// initial_cpb_removal_delay_length_minus1
 		bs_append_bits(bs, 5, 23);
@@ -525,7 +551,7 @@ fail:
 static bool pack_sei_buf_period(vaapi_encoder_t *enc, bitstream_t *bs)
 {
 	int initial_cpb_removal_delay =
-		((enc->cpb_window_ms / 2) * 90000) / 1000;
+		((enc->rc.cpb_window_ms / 2) * 90000) / 1000;
 	int initial_cpb_removal_delay_offset = 0;
 	int sequence_parameter_set_id = 0;
 
@@ -644,16 +670,15 @@ static bool create_seq_buffer(vaapi_encoder_t *enc, buffer_list_t *list)
 static bool create_slice_buffer(vaapi_encoder_t *enc, buffer_list_t *list,
 		vaapi_slice_type_t slice_type)
 {
-	int width_in_mbs = (enc->width + 15) / 16;
-	int height_in_mbs = (enc->height + 15) / 16;
-
 	memset(&enc->slice, 0, sizeof(enc->slice));
 
-	enc->slice.num_macroblocks = width_in_mbs * height_in_mbs;
+	enc->slice.num_macroblocks = enc->width_in_mbs * enc->height_in_mbs;
 	enc->slice.slice_type = slice_type;
 
 	enc->slice.slice_alpha_c0_offset_div2 = 2;
 	enc->slice.slice_beta_offset_div2 = 2;
+
+	enc->slice.slice_qp_delta = enc->rc.max_qp_delta;
 
 	if (!create_buffer(enc, VAEncSliceParameterBufferType,
 			sizeof(enc->slice), 1, &enc->slice, list)) {
@@ -703,11 +728,12 @@ static bool create_misc_rc_buffer(vaapi_encoder_t *enc,
 {
 	VAEncMiscParameterRateControl rc = {0};
 
-	rc.bits_per_second = enc->bitrate_bits;
+	rc.bits_per_second = enc->rc.bitrate_bits;
 	rc.target_percentage = 90;
-	rc.window_size = enc->cpb_window_ms;
-	rc.initial_qp = enc->qp;
-	rc.min_qp = enc->qp;
+	rc.window_size = enc->rc.cpb_window_ms;
+	rc.initial_qp = enc->rc.qp;
+	rc.min_qp = enc->rc.min_qp;
+
 	rc.rc_flags.bits.disable_frame_skip = false;
 
 	if (!create_misc_buffer(enc, VAEncMiscParameterTypeRateControl,
@@ -725,8 +751,8 @@ static bool create_misc_hdr_buffer(vaapi_encoder_t *enc,
 {
 	VAEncMiscParameterHRD hrd = {0};
 
-	hrd.initial_buffer_fullness = enc->cpb_size_bits / 2;
-	hrd.buffer_size = enc->cpb_size_bits;
+	hrd.initial_buffer_fullness = enc->rc.cpb_size_bits / 2;
+	hrd.buffer_size = enc->rc.cpb_size_bits;
 
 	if (!create_misc_buffer(enc, VAEncMiscParameterTypeHRD,
 			sizeof(hrd), &hrd, list)) {
@@ -766,7 +792,7 @@ static bool create_pic_buffer(vaapi_encoder_t *enc, buffer_list_t *list,
 
 	PPS.coded_buf = output_buf;
 	PPS.frame_num = enc->gop_idx;
-	PPS.pic_init_qp = enc->qp;
+	PPS.pic_init_qp = enc->rc.qp;
 
 	PPS.pic_fields.bits.idr_pic_flag = enc->gop_idx == 0;
 	PPS.pic_fields.bits.reference_pic_flag = 1;
@@ -933,9 +959,10 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 		goto fail;
 	if (!create_misc_hdr_buffer(enc, &buffers.da))
 		goto fail;
-	if (!create_misc_rc_buffer(enc, &buffers.da))
-		goto fail;
-	if (!!(enc->rc & VA_RC_CBR) && !create_sei_buffer(enc, &buffers.da))
+	if ((enc->rc.type == VAAPI_RC_CBR ||
+	     enc->rc.type == VAAPI_RC_VBR) &&
+	    !create_sei_buffer(enc, &buffers.da) &&
+	    !create_misc_rc_buffer(enc, &buffers.da))
 		goto fail;
 	if (!create_slice_buffer(enc, &buffers.da, slice_type))
 		goto fail;
@@ -1047,6 +1074,191 @@ fail:
 	return false;
 }
 
+#define CLAMP(val, minval, maxval) ((val > maxval) ? maxval : ((val < minval) ? minval : val))
+#define SET_CLAMPED(val, minval, maxval) \
+	if ((attribs->val > maxval) || (attribs->val < minval)) { \
+		VA_LOG(LOG_WARNING, #val " out of range (%d >= %d <= %d), " \
+				"clamping value", minval, \
+				attribs->val, maxval); \
+	} \
+	enc->rc.val = CLAMP(attribs->val, minval, maxval);
+
+void apply_rc_cbr(vaapi_encoder_t *enc, vaapi_encoder_attribs_t *attribs)
+{
+	vaapi_encoder_set_bitrate(enc, attribs->bitrate);
+
+	if (attribs->use_custom_cpb)
+		vaapi_encoder_set_cpb(enc, attribs->cpb_window_ms,
+				attribs->cpb_size);
+	else
+		vaapi_encoder_set_cpb(enc, HRD_DEFAULT_CPB_WINDOW_SIZE,
+				enc->rc.bitrate);
+
+
+	enc->rc.qp = enc->rc.min_qp = 26;
+	enc->rc.max_qp_delta = 0;
+}
+
+void apply_rc_cqp(vaapi_encoder_t *enc, vaapi_encoder_attribs_t *attribs)
+{
+	vaapi_encoder_set_bitrate(enc, 0);
+	vaapi_encoder_set_cpb(enc, 0, 0);
+
+	SET_CLAMPED(qp, 1, 51);
+	enc->rc.min_qp = enc->rc.qp;
+	enc->rc.max_qp_delta = 0;
+}
+
+uint32_t estimate_bitrate(vaapi_encoder_t *enc,
+		vaapi_encoder_attribs_t *attribs)
+{
+	// Borrowed from gst-vaapi
+
+	// According to the literature and testing, CABAC entropy coding
+        // mode could provide for +10% to +18% improvement in general,
+        // thus estimating +15% here ; and using adaptive 8x8 transforms
+        // in I-frames could bring up to +10% improvement.
+	uint32_t bits_per_mb = 48;
+
+	// CABAC
+	if (attribs->profile == VAAPI_PROFILE_BASELINE ||
+	    attribs->profile == VAAPI_PROFILE_BASELINE_CONSTRAINED)
+		bits_per_mb += (bits_per_mb * 15) / 100;
+
+	// 8x8
+	if (attribs->profile != VAAPI_PROFILE_HIGH)
+		bits_per_mb += (bits_per_mb * 10) / 100;
+
+	uint32_t bitrate = bits_per_mb *
+			(enc->width_in_mbs * enc->height_in_mbs) *
+			((float)enc->framerate_num / enc->framerate_den) /
+			1000;
+
+	return bitrate;
+}
+
+void apply_rc_vbr(vaapi_encoder_t *enc, vaapi_encoder_attribs_t *attribs)
+{
+	// fairly sure this has no effect
+	vaapi_encoder_set_bitrate(enc, estimate_bitrate(enc, attribs));
+
+	if (attribs->use_custom_cpb)
+		vaapi_encoder_set_cpb(enc, attribs->cpb_window_ms,
+				attribs->cpb_size);
+	else
+		vaapi_encoder_set_cpb(enc, HRD_DEFAULT_CPB_WINDOW_SIZE,
+				enc->rc.bitrate);
+
+	SET_CLAMPED(qp, 1, 51);
+	SET_CLAMPED(min_qp, 1, 51);
+	SET_CLAMPED(max_qp_delta, 1, 51);
+}
+
+bool apply_rate_control(vaapi_encoder_t *enc, vaapi_encoder_attribs_t *attribs)
+{
+	enc->rc.type = attribs->rc_type;
+	enc->rc.use_custom_cpb = attribs->use_custom_cpb;
+
+	switch(enc->rc.type) {
+	case VAAPI_RC_CBR:
+		apply_rc_cbr(enc, attribs);
+		break;
+	case VAAPI_RC_CQP:
+		apply_rc_cqp(enc, attribs);
+		break;
+	case VAAPI_RC_VBR:
+	case VAAPI_RC_VBR_CONSTRAINED:
+		apply_rc_vbr(enc, attribs);
+		break;
+	default:
+		return false;
+	}
+
+	return true;
+}
+
+static const char * vaapi_rc_to_str(vaapi_rc_t rc)
+{
+#define RC_CASE(x) case VAAPI_RC_ ## x: return #x
+	switch (rc)
+	{
+	RC_CASE(CBR);
+	RC_CASE(CQP);
+	RC_CASE(VBR);
+	RC_CASE(VBR_CONSTRAINED);
+	default: return "Invalid RC";
+	}
+#undef RC_CASE
+}
+
+static void dump_encoder_info(vaapi_encoder_t *enc)
+{
+	DARRAY(char) info;
+
+	static const char ZERO_BYTE = '\0';
+	static const char NL_BYTE = '\n';
+
+#define PUSHSTR(str) \
+	da_push_back_array(info, str, strlen(str)); \
+	da_push_back(info, &NL_BYTE);
+#define PUSHFMT(format, arg) \
+	do { \
+		size_t size = snprintf(NULL, 0, format, arg) + 1; \
+		char *str = bzalloc(size); \
+		snprintf(str, size, format, arg); \
+		da_push_back_array(info, str, size - 1); \
+		da_push_back(info, &NL_BYTE); \
+	} while (false);
+
+	PUSHSTR("settings:\n");
+	PUSHFMT("\tdevice_type :          %s",
+			(enc->vdisplay->type == VAAPI_DISPLAY_DRM) ?
+					"DRM" : "X11");
+
+	PUSHFMT("\tdevice:                %s", enc->vdisplay->name);
+
+	PUSHFMT("\tdevice_path:           %s", enc->vdisplay->path);
+	PUSHFMT("\tfps_num:               %d", enc->framerate_num);
+	PUSHFMT("\tfps_den:               %d", enc->framerate_den);
+	PUSHFMT("\twidth:                 %d", enc->width);
+	PUSHFMT("\theight:                %d", enc->height);
+	PUSHFMT("\tprofile:               %s", enc->caps->def.name);
+	PUSHFMT("\tkeyint:                %d (s)", enc->keyint);
+	PUSHFMT("\trc_type:               %s", vaapi_rc_to_str(enc->rc.type));
+
+	if (enc->rc.type == VAAPI_RC_CBR)
+		PUSHFMT("\tbitrate:               %d (kbit)",
+				enc->rc.bitrate);
+
+	if (enc->rc.type == VAAPI_RC_CBR ||
+	    enc->rc.type == VAAPI_RC_VBR ||
+	    enc->rc.type == VAAPI_RC_VBR_CONSTRAINED) {
+		PUSHFMT("\tuse_custom_cpb:        %s", enc->rc.use_custom_cpb ?
+				"yes" : "no");
+		if (enc->rc.use_custom_cpb)
+			PUSHFMT("\tcpb_size:              %d (kbit)",
+					enc->rc.cpb_size);
+	}
+
+	if (enc->rc.type == VAAPI_RC_CQP ||
+	    enc->rc.type == VAAPI_RC_VBR ||
+	    enc->rc.type == VAAPI_RC_VBR_CONSTRAINED)
+		PUSHFMT("\tqp:                    %d", enc->rc.qp);
+
+	if (enc->rc.type == VAAPI_RC_VBR ||
+	    enc->rc.type == VAAPI_RC_VBR_CONSTRAINED) {
+		PUSHFMT("\tmin_qp:                %d", enc->rc.min_qp);
+		PUSHFMT("\tmax_qp_delta:          %d", enc->rc.max_qp_delta);
+	}
+
+
+	da_push_back(info, &ZERO_BYTE);
+
+	VA_LOG_STR(LOG_INFO, info.array);
+
+	da_free(info);
+}
+
 vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 {
 	vaapi_encoder_t *enc;
@@ -1080,14 +1292,13 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 	enc->width                 = attribs->width;
 	enc->height                = attribs->height;
 
-	// bitrate internally is bits, not kbits
-	enc->bitrate               = attribs->bitrate;
+	enc->width_in_mbs          = (enc->width + 15) / 16;
+	enc->height_in_mbs         = (enc->height + 15) / 16;
 
 	enc->framerate_num         = attribs->framerate_num;
 	enc->framerate_den         = attribs->framerate_den;
 	enc->keyint                = attribs->keyint;
 	enc->format                = attribs->format;
-	enc->rc                    = attribs->cbr ? VA_RC_CBR : VA_RC_VBR;
 
 	enc->surface_cnt           = attribs->surface_cnt;
 	enc->coded_block_cb_opaque = attribs->coded_block_cb_opaque;
@@ -1097,29 +1308,24 @@ vaapi_encoder_t *vaapi_encoder_create(vaapi_encoder_attribs_t *attribs)
 
 	da_resize(enc->refpics, attribs->refpic_cnt);
 
+	float fps = (float)enc->framerate_num / enc->framerate_den;
+	enc->intra_period = fps * enc->keyint;
+
+	apply_rate_control(enc, attribs);
+
 	if (!initialize_encoder(enc)) {
 		VA_LOG(LOG_ERROR, "failed to initialize encoder for profile %s",
 				enc->caps->def.name);
 		goto fail;
 	}
 
-	float fps = (float)enc->framerate_num / enc->framerate_den;
-	enc->intra_period = fps * enc->keyint;
-	enc->qp = 26;
-	vaapi_encoder_set_bitrate(enc, enc->bitrate);
-
-	enc->cpb_window_ms = attribs->cpb_window_ms;
-
-	if (attribs->use_custom_cpb_size)
-		vaapi_encoder_set_cpb_size(enc, attribs->cpb_size);
-	else
-		vaapi_encoder_set_cpb_size(enc, enc->bitrate);
-
-	init_sps(enc);
-	init_pps(enc);
+	dump_encoder_info(enc);
 
 	enc->surfq = surface_queue_create(enc->display, enc->context,
 			enc->surface_cnt, enc->width, enc->height);
+
+	init_sps(enc);
+	init_pps(enc);
 
 	vaapi_display_unlock(enc->vdisplay);
 

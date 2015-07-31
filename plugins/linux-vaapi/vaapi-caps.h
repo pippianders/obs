@@ -32,19 +32,3 @@ bool vaapi_profile_caps_init(vaapi_display_t *display);
 
 vaapi_profile_caps_t *vaapi_caps_from_profile(vaapi_display_t *display,
 		vaapi_profile_t profile);
-
-static const char * vaapi_rc_to_str(uint32_t rc)
-{
-#define RC_CASE(x) case VA_RC_ ## x: return #x
-	switch (rc)
-	{
-	RC_CASE(NONE);
-	RC_CASE(CBR);
-	RC_CASE(VBR);
-	RC_CASE(VCM);
-	RC_CASE(CQP);
-	RC_CASE(VBR_CONSTRAINED);
-	default: return "Invalid RC";
-	}
-#undef RC_CASE
-}

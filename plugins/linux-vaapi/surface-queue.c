@@ -153,8 +153,6 @@ static bool render_surface(surface_queue_t *q, surface_entry_t *e)
 {
 	VAStatus status;
 
-	uint64_t t = os_gettime_ns();
-
 	CHECK_STATUS_FALSE(vaBeginPicture(q->display, q->context, e->surface));
 	CHECK_STATUS_FALSE(vaRenderPicture(q->display, q->context,
 			(VABufferID *)e->list.array, e->list.num));

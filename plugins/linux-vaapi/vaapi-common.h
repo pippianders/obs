@@ -10,6 +10,9 @@
 #define VA_LOG(level, format, ...) \
 	blog(level, "[VAAPI encoder]: " format, ##__VA_ARGS__)
 
+#define VA_LOG_STR(level, str) \
+	blog(level, "[VAAPI encoder]: %s", str)
+
 #define VA_LOG_STATUS(level, x, status) \
 	VA_LOG(LOG_ERROR, "%s: %s", #x, vaErrorStr(status));
 
@@ -60,3 +63,19 @@ size_t vaapi_get_display_cnt();
 vaapi_display_t *vaapi_get_display(size_t index);
 vaapi_display_t *vaapi_find_display(vaapi_display_type_t type,
 		const char *path);
+
+static const char * va_rc_to_str(uint32_t rc)
+{
+#define RC_CASE(x) case VA_RC_ ## x: return #x
+	switch (rc)
+	{
+	RC_CASE(NONE);
+	RC_CASE(CBR);
+	RC_CASE(VBR);
+	RC_CASE(VCM);
+	RC_CASE(CQP);
+	RC_CASE(VBR_CONSTRAINED);
+	default: return "Invalid RC";
+	}
+#undef RC_CASE
+}

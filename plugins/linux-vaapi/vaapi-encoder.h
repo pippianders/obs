@@ -26,6 +26,15 @@ enum vaapi_format {
 };
 typedef enum vaapi_format vaapi_format_t;
 
+enum vaapi_rc {
+	VAAPI_RC_NONE,
+	VAAPI_RC_CBR,
+	VAAPI_RC_CQP,
+	VAAPI_RC_VBR,
+	VAAPI_RC_VBR_CONSTRAINED
+};
+typedef enum vaapi_rc vaapi_rc_t;
+
 typedef void(*vaapi_coded_block_cb)(void *opaque, coded_block_entry_t *entry);
 
 struct vaapi_encoder_attribs
@@ -36,12 +45,16 @@ struct vaapi_encoder_attribs
 	uint32_t width;
 	uint32_t height;
 	uint32_t bitrate;
-	bool cbr;
+	vaapi_rc_t rc_type;
+	uint32_t min_qp;
+	uint32_t qp;
+	uint32_t max_qp_delta;
+
 	uint32_t framerate_num;
 	uint32_t framerate_den;
 	uint32_t keyint;
 	uint32_t refpic_cnt;
-	bool use_custom_cpb_size;
+	bool use_custom_cpb;
 	uint32_t cpb_size;
 	uint32_t cpb_window_ms;
 
