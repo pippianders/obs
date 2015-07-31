@@ -1208,6 +1208,7 @@ static void dump_encoder_info(vaapi_encoder_t *enc)
 		snprintf(str, size, format, arg); \
 		da_push_back_array(info, str, size - 1); \
 		da_push_back(info, &NL_BYTE); \
+		bfree(str); \
 	} while (false);
 
 	PUSHSTR("settings:\n");

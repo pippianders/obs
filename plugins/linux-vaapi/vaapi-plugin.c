@@ -260,7 +260,7 @@ fail:
 #define TEXT_PROFILE      obs_module_text("Profile")
 #define TEXT_NONE         obs_module_text("None")
 #define TEXT_DEVICE_TYPE  obs_module_text("DeviceType")
-#define TEXT_X11_DEVICE   obs_module_text("X11")
+#define TEXT_X11_DEVICE   obs_module_text("X11Device")
 #define TEXT_DRM_DEVICE   obs_module_text("DRMDevice")
 #define TEXT_DEVICE       obs_module_text("Device")
 
