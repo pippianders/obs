@@ -567,7 +567,7 @@ static bool pack_sei_buf_period(vaapi_encoder_t *enc, bitstream_t *bs)
 
 static bool pack_sei_pic_timing(vaapi_encoder_t *enc, bitstream_t *bs)
 {
-	int cpb_removal_delay = (enc->gop_idx % enc->intra_period) * 2 + 2;
+	int cpb_removal_delay = enc->gop_idx * 2 + 2;
 	int dpb_removal_delay = 0;
 	int pic_struct = 0;
 	bool clock_timestamp_flag = false;
@@ -949,7 +949,8 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 	vaapi_slice_type_t slice_type;
 
 	// todo: implement b frame handling
-	if ((enc->gop_idx % enc->intra_period) == 0)
+	// for now, every I frame is an IDR
+	if (enc->gop_idx == 0)
 		slice_type = VAAPI_SLICE_TYPE_I;
 	else
 		slice_type = VAAPI_SLICE_TYPE_P;
@@ -989,6 +990,8 @@ bool encode_surface(vaapi_encoder_t *enc, VASurfaceID input)
 
 	enc->frame_cnt++;
 	enc->gop_idx++;
+	enc->gop_idx %= enc->intra_period;
+
 
 	return true;
 
