@@ -1,4 +1,7 @@
 #include <util/util.hpp>
+#include <util/platform.h>
+#include <thread>
+#include <atomic>
 #include "text-dwrite.hpp"
 
 #define do_log(level, format, ...) \
@@ -14,6 +17,8 @@
 using namespace std;
 
 struct DWriteTextSource {
+	thread                         updateThread;
+
 	obs_source_t                   *source = nullptr;
 
 	ComPtr<IDWriteTextFormat>      format;
@@ -22,13 +27,16 @@ struct DWriteTextSource {
 	ComPtr<ID2D1RenderTarget>      target;
 	ComPtr<ID2D1SolidColorBrush>   brush;
 
+
 	BPtr<wchar_t>                  text;
-	UINT                           length = 0;
+	BPtr<wchar_t>                  file;
+	BPtr<wchar_t>                  face;
 
 	gs_texture_t                   *texture = nullptr;
 
-	DWORD                          color = 0xFFFFFF;
-	int                            size = 0;
+	uint32_t                       color = 0xFFFFFFFF;
+	int                            fontSize;
+	UINT                           length = 0;
 	UINT                           cx = 0;
 	UINT                           cy = 0;
 	UINT                           newCX = 0;
@@ -37,10 +45,14 @@ struct DWriteTextSource {
 	bool                           italic = false;
 	bool                           underline = false;
 	bool                           vertical = false;
+	atomic<bool>                   updateReady = false;
 
 	inline DWriteTextSource(obs_source_t *source_);
 	inline ~DWriteTextSource()
 	{
+		if (updateThread.joinable())
+			updateThread.join();
+
 		if (texture) {
 			obs_enter_graphics();
 			gs_texture_destroy(texture);
@@ -62,11 +74,11 @@ inline bool DWriteTextSource::Update_Initialize()
 	DWRITE_TEXT_METRICS metrics;
 	HRESULT hr;
 
-	hr = dwrite->CreateTextFormat(L"Arial", nullptr,
+	hr = dwrite->CreateTextFormat(face, nullptr,
 			DWRITE_FONT_WEIGHT_REGULAR,
 			DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL,
-			72.0f, L"en-us", &format);
+			float(fontSize), L"en-us", &format);
 	if (FAILED(hr)) {
 		warn_hr("Failed to create text format", hr);
 		return false;
@@ -85,7 +97,7 @@ inline bool DWriteTextSource::Update_Initialize()
 		return false;
 	}
 
-	newCX = UINT(metrics.width);
+	newCX = UINT(metrics.widthIncludingTrailingWhitespace);
 	newCY = UINT(metrics.height);
 
 	hr = format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -116,8 +128,13 @@ inline bool DWriteTextSource::Update_Initialize()
 		return false;
 	}
 
-	hr = target->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White),
-			&brush);
+	uint32_t convertedColor =
+		(color & 0xFF) << 16 |
+		(color & 0xFF00) |
+		(color & 0xFF0000) >> 16;
+
+	D2D1::ColorF colorVal = D2D1::ColorF(convertedColor);
+	hr = target->CreateSolidColorBrush(colorVal, &brush);
 	if (FAILED(hr)) {
 		warn_hr("Failed to create brush", hr);
 		return false;
@@ -141,7 +158,6 @@ inline void DWriteTextSource::Update_CreateTexture()
 {
 	WICRect wicRect = {0, 0, newCX, newCY};
 	ComPtr<IWICBitmapLock> lock;
-	UINT stride;
 	HRESULT hr;
 	UINT size;
 	BYTE *ptr;
@@ -152,13 +168,10 @@ inline void DWriteTextSource::Update_CreateTexture()
 	hr = lock->GetDataPointer(&size, &ptr);
 	if (FAILED(hr)) return warn_hr("Failed to get pointer", hr);
 
-	hr = lock->GetStride(&stride);
-	if (FAILED(hr)) return warn_hr("Failed to get stride", hr);
-
-	obs_enter_graphics();
+	if (texture)
+		gs_texture_destroy(texture);
 	texture = gs_texture_create(newCX, newCY, GS_BGRA, 1,
 			(const uint8_t**)&ptr, 0);
-	obs_leave_graphics();
 
 	cx = newCX;
 	cy = newCY;
@@ -166,32 +179,58 @@ inline void DWriteTextSource::Update_CreateTexture()
 
 inline void DWriteTextSource::Update(obs_data_t *settings)
 {
-	if (texture) {
-		obs_enter_graphics();
-		gs_texture_destroy(texture);
-		texture = nullptr;
-		obs_leave_graphics();
+	obs_data_t *fontObj = obs_data_get_obj(settings, "font");
+	const char *fontFace = obs_data_get_string(fontObj, "face");
+
+	bool readFromFile = obs_data_get_bool(settings, "read_from_file");
+	const char *newText = obs_data_get_string(settings, "text");
+	const char *newFile = obs_data_get_string(settings, "file");
+	color = (uint32_t)obs_data_get_int(settings, "color");
+
+	if (updateThread.joinable())
+		updateThread.join();
+
+	fontSize = (int)obs_data_get_int(fontObj, "size");
+	obs_data_release(fontObj);
+
+	if (readFromFile) {
+		BPtr<char> fileText;
+
+		os_utf8_to_wcs_ptr(newFile, 0, &file);
+
+		fileText = os_quick_read_utf8_file(newFile);
+		length = (UINT)os_utf8_to_wcs_ptr(fileText, 0, &text);
+	} else {
+		length = (UINT)os_utf8_to_wcs_ptr(newText, 0, &text);
 	}
 
-
-	text = bwstrdup(L"Well what do you know, this test implementation of "
-			L"DirectWrite is working.");
-	length = text ? UINT(wcslen(text)) : 0;
+	if (!length)
+		text = nullptr;
 	cx = cy = 0;
 
 	if (!text || !length)
 		return;
 
-	if (Update_Initialize()) {
-		Update_DrawText();
-		Update_CreateTexture();
-	}
+	os_utf8_to_wcs_ptr(fontFace, 0, &face);
+
+	auto threadFunc = [this] () {
+		if (Update_Initialize()) {
+			Update_DrawText();
+			updateReady = true;
+		}
+	};
+
+	updateThread = move(thread(threadFunc));
 }
 
 inline void DWriteTextSource::Render()
 {
 	if (texture)
 		obs_source_draw(texture, 0, 0, 0, 0, false);
+	if (updateReady) {
+		Update_CreateTexture();
+		updateReady = false;
+	}
 }
 
 inline DWriteTextSource::DWriteTextSource(obs_source_t *source_)
@@ -222,7 +261,7 @@ static void DestroyDWriteTextSource(void *data)
 	delete reinterpret_cast<DWriteTextSource*>(data);
 }
 
-static void *CreateDWriteText(obs_data_t *settings, obs_source_t *source)
+static void *CreateDWriteText(obs_data_t*, obs_source_t *source)
 {
 	DWriteTextSource *s = new DWriteTextSource(source);
 	return s;
@@ -238,13 +277,62 @@ static uint32_t GetDWriteTextHeight(void *data)
 	return reinterpret_cast<DWriteTextSource*>(data)->cy;
 }
 
+#ifdef _WIN32
+#define DEFAULT_FACE "Arial"
+#elif __APPLE__
+#define DEFAULT_FACE "Helvetica"
+#else
+#define DEFAULT_FACE "Sans Serif"
+#endif
+
 static void GetDWriteTextDefaults(obs_data_t *settings)
 {
+	obs_data_t *fontObj = obs_data_create();
+	obs_data_set_default_string(fontObj, "face", DEFAULT_FACE);
+	obs_data_set_default_int(fontObj, "size", 32);
+	obs_data_set_default_obj(settings, "font", fontObj);
+	obs_data_release(fontObj);
+
+	obs_data_set_default_int(settings, "color", 0xFFFFFFFF);
+}
+
+static bool read_from_file_changed(obs_properties_t *props, obs_property_t *p,
+		obs_data_t *settings)
+{
+	bool readFromFile = obs_data_get_bool(settings, "read_from_file");
+
+	p = obs_properties_get(props, "text");
+	obs_property_set_visible(p, !readFromFile);
+
+	p = obs_properties_get(props, "file");
+	obs_property_set_visible(p, readFromFile);
+
+	return true;
 }
 
 static obs_properties_t *GetDWriteTextProperties(void*)
 {
-	return nullptr;
+	obs_properties_t *props = obs_properties_create();
+	obs_property_t *p;
+
+	string filter;
+	filter += obs_module_text("FileFilter.TextFiles");
+	filter += " (*.txt);;";
+	filter += obs_module_text("FileFilter.AllFiles");
+	filter += " (*.*)";
+
+	obs_properties_add_font(props, "font", obs_module_text("Font"));
+
+	p = obs_properties_add_bool(props, "read_from_file",
+			obs_module_text("ReadFromFile"));
+	obs_property_set_modified_callback(p, read_from_file_changed);
+
+	obs_properties_add_text(props, "text", obs_module_text("Text"),
+			OBS_TEXT_MULTILINE);
+	obs_properties_add_path(props, "file", obs_module_text("File"),
+			OBS_PATH_FILE, filter.c_str(), nullptr);
+	obs_properties_add_color(props, "color", obs_module_text("Color"));
+	return props;
 }
 
 void RegisterDWriteTextSource()
