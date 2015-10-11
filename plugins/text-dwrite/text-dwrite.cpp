@@ -261,7 +261,6 @@ inline void DWriteTextSource::Update(obs_data_t *settings)
 
 	if (!length)
 		text = nullptr;
-	cx = cy = 0;
 
 	if (!text || !length)
 		return ClearText();
