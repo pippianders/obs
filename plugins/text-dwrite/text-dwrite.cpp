@@ -47,6 +47,7 @@ struct DWriteTextSource {
 	bool                           readFromFile = false;
 	bool                           bold = false;
 	bool                           italic = false;
+	bool                           strikeout = false;
 	bool                           underline = false;
 	bool                           vertical = false;
 	atomic<bool>                   updateReady = false;
@@ -85,10 +86,16 @@ inline bool DWriteTextSource::Update_Initialize()
 	DWRITE_TEXT_METRICS metrics;
 	HRESULT hr;
 
+	DWRITE_FONT_WEIGHT weight = bold ?
+		DWRITE_FONT_WEIGHT_BOLD :
+		DWRITE_FONT_WEIGHT_REGULAR;
+
+	DWRITE_FONT_STYLE style = italic ?
+		DWRITE_FONT_STYLE_ITALIC :
+		DWRITE_FONT_STYLE_NORMAL;
+
 	hr = dwrite->CreateTextFormat(face, nullptr,
-			DWRITE_FONT_WEIGHT_REGULAR,
-			DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL,
+			weight, style, DWRITE_FONT_STRETCH_NORMAL,
 			float(fontSize), L"en-us", &format);
 	if (FAILED(hr)) {
 		warn_hr("Failed to create text format", hr);
@@ -240,12 +247,18 @@ inline void DWriteTextSource::Update(obs_data_t *settings)
 	const char *fontFace = obs_data_get_string(fontObj, "face");
 	const char *newText = obs_data_get_string(settings, "text");
 	const char *newFile = obs_data_get_string(settings, "file");
+	uint32_t fontFlags = (uint32_t)obs_data_get_int(fontObj, "flags");
 
 	readFromFile = obs_data_get_bool(settings, "read_from_file");
 	color = (uint32_t)obs_data_get_int(settings, "color");
 
 	if (updateThread.joinable())
 		updateThread.join();
+
+	bold = (fontFlags & OBS_FONT_BOLD) != 0;
+	italic = (fontFlags & OBS_FONT_ITALIC) != 0;
+	underline = (fontFlags & OBS_FONT_UNDERLINE) != 0;
+	strikeout = (fontFlags & OBS_FONT_STRIKEOUT) != 0;
 
 	fontSize = (int)obs_data_get_int(fontObj, "size");
 	obs_data_release(fontObj);
