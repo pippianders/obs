@@ -301,10 +301,12 @@ inline void DWriteTextSource::CheckFileForUpdate()
 inline void DWriteTextSource::Render()
 {
 	if (texture) {
+		gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+
 		gs_blend_state_push();
 		gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
-		while (gs_effect_loop(obs_get_default_effect(), "Draw"))
+		while (gs_effect_loop(effect, "Draw"))
 			obs_source_draw(texture, 0, 0, 0, 0, false);
 
 		gs_blend_state_pop();
