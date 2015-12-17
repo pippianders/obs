@@ -558,6 +558,10 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 		CHECK_REQUIRED_VAL_(info, get_width,  obs_register_source);
 		CHECK_REQUIRED_VAL_(info, get_height, obs_register_source);
 	}
+
+	if ((info->output_flags & OBS_SOURCE_COMPOSITE) != 0) {
+		CHECK_REQUIRED_VAL_(info, audio_render, obs_register_source);
+	}
 #undef CHECK_REQUIRED_VAL_
 
 	if (size > sizeof(data)) {

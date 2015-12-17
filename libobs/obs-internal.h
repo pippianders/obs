@@ -494,6 +494,7 @@ struct obs_source {
 
 	/* audio */
 	bool                            audio_failed;
+	bool                            audio_pending;
 	bool                            muted;
 	struct obs_source               *next_audio_source;
 	struct obs_source               **prev_next_audio_source;
@@ -563,8 +564,6 @@ extern const struct obs_source_info *find_source(struct darray *list,
 extern bool obs_source_init_context(struct obs_source *source,
 		obs_data_t *settings, const char *name,
 		obs_data_t *hotkey_data);
-extern bool obs_source_init(struct obs_source *source,
-		const struct obs_source_info *info);
 
 extern void obs_source_destroy(struct obs_source *source);
 
@@ -578,6 +577,9 @@ extern void obs_source_deactivate(obs_source_t *source, enum view_type type);
 extern void obs_source_video_tick(obs_source_t *source, float seconds);
 extern float obs_source_get_target_volume(obs_source_t *source,
 		obs_source_t *target);
+
+extern void obs_source_audio_render(obs_source_t *source, uint32_t mixers,
+		size_t channels, size_t sample_rate, size_t size);
 
 
 /* ------------------------------------------------------------------------- */
