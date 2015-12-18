@@ -716,7 +716,6 @@ bool OBSBasic::InitBasicConfigDefaults()
 	config_set_default_uint  (basicConfig, "Audio", "SampleRate", 44100);
 	config_set_default_string(basicConfig, "Audio", "ChannelSetup",
 			"Stereo");
-	config_set_default_uint  (basicConfig, "Audio", "BufferingTime", 1000);
 
 	return true;
 }
@@ -2149,8 +2148,6 @@ bool OBSBasic::ResetAudio()
 		ai.speakers = SPEAKERS_MONO;
 	else
 		ai.speakers = SPEAKERS_STEREO;
-
-	ai.buffer_ms = config_get_uint(basicConfig, "Audio", "BufferingTime");
 
 	return obs_reset_audio(&ai);
 }
