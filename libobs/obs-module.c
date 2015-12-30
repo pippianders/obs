@@ -546,6 +546,17 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 		goto error;
 	}
 
+	memcpy(&data, info, size);
+
+	/* mark audio-only filters as an async filter categorically */
+	if (data.type == OBS_SOURCE_TYPE_FILTER) {
+		if ((data.output_flags & OBS_SOURCE_VIDEO) == 0)
+			data.output_flags |= OBS_SOURCE_ASYNC;
+	}
+
+	if (data.type == OBS_SOURCE_TYPE_TRANSITION)
+		data.output_flags |= OBS_SOURCE_COMPOSITE;
+
 #define CHECK_REQUIRED_VAL_(info, val, func) \
 	CHECK_REQUIRED_VAL(struct obs_source_info, info, val, func)
 	CHECK_REQUIRED_VAL_(info, get_name, obs_register_source);
@@ -559,7 +570,7 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 		CHECK_REQUIRED_VAL_(info, get_height, obs_register_source);
 	}
 
-	if ((info->output_flags & OBS_SOURCE_COMPOSITE) != 0) {
+	if ((data.output_flags & OBS_SOURCE_COMPOSITE) != 0) {
 		CHECK_REQUIRED_VAL_(info, audio_render, obs_register_source);
 	}
 #undef CHECK_REQUIRED_VAL_
@@ -570,14 +581,6 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 				"supports (%llu)", (long long unsigned)size,
 				(long long unsigned)sizeof(data));
 		goto error;
-	}
-
-	memcpy(&data, info, size);
-
-	/* mark audio-only filters as an async filter categorically */
-	if (data.type == OBS_SOURCE_TYPE_FILTER) {
-		if ((data.output_flags & OBS_SOURCE_VIDEO) == 0)
-			data.output_flags |= OBS_SOURCE_ASYNC;
 	}
 
 	if (array)
