@@ -619,9 +619,6 @@ static bool scene_audio_render(void *data, uint64_t *ts_out,
 	struct obs_scene *scene = data;
 	struct obs_scene_item *item;
 
-	memset(audio_output->output[0].data[0], 0, AUDIO_OUTPUT_FRAMES *
-			MAX_AUDIO_MIXES * channels * sizeof(float));
-
 	audio_lock(scene);
 
 	item = scene->first_item;
