@@ -974,6 +974,65 @@ EXPORT uint64_t obs_source_get_audio_timestamp(const obs_source_t *source);
 EXPORT void obs_source_get_audio_mix(const obs_source_t *source,
 		struct obs_source_audio_mix *audio);
 
+/* ------------------------------------------------------------------------- */
+/* Transition-specific functions */
+enum obs_transition_target {
+	OBS_TRANSITION_SOURCE_A,
+	OBS_TRANSITION_SOURCE_B
+};
+
+EXPORT void obs_transition_set_source(obs_source_t *transition,
+		enum obs_transition_target target, obs_source_t *source);
+EXPORT obs_source_t *obs_transition_get_source(obs_source_t *transition,
+		enum obs_transition_target target);
+EXPORT void obs_transition_clear(obs_source_t *transition);
+
+EXPORT obs_source_t *obs_transition_get_active_source(obs_source_t *transition);
+
+enum obs_transition_mode {
+	OBS_TRANSITION_MODE_AUTO,
+};
+
+EXPORT void obs_transition_start(obs_source_t *transition,
+		enum obs_transition_mode mode, uint32_t duration_ms,
+		obs_source_t *dest);
+
+enum obs_transition_scale_type {
+	OBS_TRANSITION_SCALE_MAX_ONLY,
+	OBS_TRANSITION_SCALE_ASPECT,
+	OBS_TRANSITION_SCALE_STRETCH,
+};
+
+EXPORT void obs_transition_set_scale_type(obs_source_t *transition,
+		enum obs_transition_scale_type type);
+EXPORT enum obs_transition_scale_type obs_transition_get_scale_type(
+		const obs_source_t *transition);
+
+EXPORT void obs_transition_set_alignment(obs_source_t *transition,
+		uint32_t alignment);
+EXPORT uint32_t obs_transition_get_alignment(const obs_source_t *transition);
+
+EXPORT void obs_transition_set_size(obs_source_t *transition,
+		uint32_t cx, uint32_t cy);
+EXPORT void obs_transition_get_size(const obs_source_t *transition,
+		uint32_t *cx, uint32_t *cy);
+
+/* used by transitions */
+
+typedef void (*obs_transition_video_render_callback_t)(void *data,
+		gs_texture_t *a, gs_texture_t *b, float t,
+		uint32_t cx, uint32_t cy);
+typedef float (*obs_transition_audio_mix_callback_t)(void *data, float t);
+
+EXPORT void obs_transition_video_render(obs_source_t *transition,
+		obs_transition_video_render_callback_t callback);
+
+EXPORT bool obs_transition_audio_render(obs_source_t *transition,
+		uint64_t *ts_out, struct obs_source_audio_mix *audio,
+		uint32_t mixers, size_t channels, size_t sample_rate,
+		obs_transition_audio_mix_callback_t mix_a_callback,
+		obs_transition_audio_mix_callback_t mix_b_callback);
+
 
 /* ------------------------------------------------------------------------- */
 /* Scenes */
