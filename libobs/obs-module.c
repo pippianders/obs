@@ -566,6 +566,19 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 	if (data.type == OBS_SOURCE_TYPE_TRANSITION)
 		data.output_flags |= OBS_SOURCE_COMPOSITE;
 
+	if ((data.output_flags & OBS_SOURCE_COMPOSITE) != 0) {
+		if ((data.output_flags & OBS_SOURCE_AUDIO) != 0) {
+			source_warn("Source '%s': Composite sources "
+					"cannot be audio sources");
+			goto error;
+		}
+		if ((data.output_flags & OBS_SOURCE_ASYNC) != 0) {
+			source_warn("Source '%s': Composite sources "
+					"cannot be async sources");
+			goto error;
+		}
+	}
+
 #define CHECK_REQUIRED_VAL_(info, val, func) \
 	CHECK_REQUIRED_VAL(struct obs_source_info, info, val, func)
 	CHECK_REQUIRED_VAL_(info, get_name, obs_register_source);
