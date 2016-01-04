@@ -425,6 +425,7 @@ void OBSBasic::CreateDefaultScene(bool firstStart)
 		CreateFirstRunSources();
 
 	TransitionToScene(scene);
+	AddScene(obs_scene_get_source(scene));
 	obs_scene_release(scene);
 
 	disableSaving--;
