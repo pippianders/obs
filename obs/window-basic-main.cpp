@@ -901,7 +901,7 @@ void OBSBasic::OBSInit()
 
 	InitPrimitives();
 
-	obs_source_t *transition = obs_source_create("fade_transition",
+	transition = obs_source_create("fade_transition",
 			"_fade_transition", NULL, NULL);
 	obs_set_output_source(0, transition);
 
