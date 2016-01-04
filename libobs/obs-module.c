@@ -523,6 +523,15 @@ cleanup:
 			info->free_type_data(info->type_data);            \
 	} while (false)
 
+#define source_warn(format, ...) \
+	blog(LOG_WARNING, "obs_register_source: " format, ##__VA_ARGS__)
+#define output_warn(format, ...) \
+	blog(LOG_WARNING, "obs_register_output: " format, ##__VA_ARGS__)
+#define encoder_warn(format, ...) \
+	blog(LOG_WARNING, "obs_register_encoder: " format, ##__VA_ARGS__)
+#define service_warn(format, ...) \
+	blog(LOG_WARNING, "obs_register_service: " format, ##__VA_ARGS__)
+
 void obs_register_source_s(const struct obs_source_info *info, size_t size)
 {
 	struct obs_source_info data = {0};
@@ -535,13 +544,13 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 	} else if (info->type == OBS_SOURCE_TYPE_TRANSITION) {
 		array = &obs->transition_types.da;
 	} else if (info->type != OBS_SOURCE_TYPE_SCENE) {
-		blog(LOG_ERROR, "Tried to register unknown source type: %u",
+		source_warn("Tried to register unknown source type: %u",
 				info->type);
 		goto error;
 	}
 
 	if (get_source_info(info->id)) {
-		blog(LOG_WARNING, "Source d '%s' already exists!  "
+		source_warn("Source '%s' already exists!  "
 		                  "Duplicate library?", info->id);
 		goto error;
 	}
@@ -576,7 +585,7 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 #undef CHECK_REQUIRED_VAL_
 
 	if (size > sizeof(data)) {
-		blog(LOG_ERROR, "Tried to register obs_source_info with size "
+		source_warn("Tried to register obs_source_info with size "
 				"%llu which is more than libobs currently "
 				"supports (%llu)", (long long unsigned)size,
 				(long long unsigned)sizeof(data));
@@ -595,7 +604,7 @@ error:
 void obs_register_output_s(const struct obs_output_info *info, size_t size)
 {
 	if (find_output(info->id)) {
-		blog(LOG_WARNING, "Output id '%s' already exists!  "
+		output_warn("Output id '%s' already exists!  "
 		                  "Duplicate library?", info->id);
 		goto error;
 	}
@@ -631,7 +640,7 @@ error:
 void obs_register_encoder_s(const struct obs_encoder_info *info, size_t size)
 {
 	if (find_encoder(info->id)) {
-		blog(LOG_WARNING, "Encoder id '%s' already exists!  "
+		encoder_warn("Encoder id '%s' already exists!  "
 		                  "Duplicate library?", info->id);
 		goto error;
 	}
@@ -657,7 +666,7 @@ error:
 void obs_register_service_s(const struct obs_service_info *info, size_t size)
 {
 	if (find_service(info->id)) {
-		blog(LOG_WARNING, "Service id '%s' already exists!  "
+		service_warn("Service id '%s' already exists!  "
 		                  "Duplicate library?", info->id);
 		goto error;
 	}
