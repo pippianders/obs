@@ -192,6 +192,8 @@ private:
 	obs_hotkey_pair_id streamingHotkeys, recordingHotkeys;
 	obs_hotkey_id forceStreamingStopHotkey;
 
+	obs_source_t *transition;
+
 public slots:
 	void StartStreaming();
 	void StopStreaming();
@@ -245,7 +247,7 @@ private:
 	static void SourceActivated(void *data, calldata_t *params);
 	static void SourceDeactivated(void *data, calldata_t *params);
 	static void SourceRenamed(void *data, calldata_t *params);
-	static void ChannelChanged(void *data, calldata_t *params);
+	static void TransitionStarted(void *data, calldata_t *params);
 	static void RenderMain(void *data, uint32_t cx, uint32_t cy);
 
 	void ResizePreview(uint32_t cx, uint32_t cy);

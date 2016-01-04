@@ -95,10 +95,14 @@ static void AddSource(void *_data, obs_scene_t *scene)
 
 static void AddExisting(const char *name, const bool visible)
 {
-	obs_source_t *source = obs_get_output_source(0);
+	obs_source_t *transition = obs_get_output_source(0);
+	obs_source_t *source = obs_transition_get_active_source(transition);
 	obs_scene_t  *scene  = obs_scene_from_source(source);
-	if (!scene)
+	if (!scene) {
+		obs_source_release(source);
+		obs_source_release(transition);
 		return;
+	}
 
 	source = obs_get_source_by_name(name);
 	if (source) {
@@ -111,16 +115,21 @@ static void AddExisting(const char *name, const bool visible)
 	}
 
 	obs_scene_release(scene);
+	obs_source_release(transition);
 }
 
 bool AddNew(QWidget *parent, const char *id, const char *name,
 		const bool visible, OBSSource &newSource)
 {
-	obs_source_t *source  = obs_get_output_source(0);
+	obs_source_t *transition = obs_get_output_source(0);
+	obs_source_t *source = obs_transition_get_active_source(transition);
 	obs_scene_t  *scene   = obs_scene_from_source(source);
 	bool         success = false;
-	if (!source)
+	if (!source) {
+		obs_source_release(source);
+		obs_source_release(transition);
 		return false;
+	}
 
 	source = obs_get_source_by_name(name);
 	if (source) {

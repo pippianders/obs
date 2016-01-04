@@ -257,8 +257,13 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
 	SaveAudioDevice(AUX_AUDIO_2,     4, saveData, audioSources);
 	SaveAudioDevice(AUX_AUDIO_3,     5, saveData, audioSources);
 
+	obs_source_t *transition = obs_get_output_source(0);
+
 	auto FilterAudioSources = [&](obs_source_t *source)
 	{
+		if (source == transition)
+			return false;
+
 		return find(begin(audioSources), end(audioSources), source) ==
 				end(audioSources);
 	};
@@ -270,7 +275,8 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
 		return (*static_cast<FilterAudioSources_t*>(data))(source);
 	}, static_cast<void*>(&FilterAudioSources));
 
-	obs_source_t *currentScene = obs_get_output_source(0);
+	obs_source_t *currentScene = obs_transition_get_active_source(
+			transition);
 	const char   *sceneName   = obs_source_get_name(currentScene);
 
 	const char *sceneCollection = config_get_string(App()->GlobalConfig(),
@@ -282,6 +288,7 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
 	obs_data_set_array(saveData, "sources", sourcesArray);
 	obs_data_array_release(sourcesArray);
 	obs_source_release(currentScene);
+	obs_source_release(transition);
 
 	return saveData;
 }
@@ -391,6 +398,21 @@ void OBSBasic::CreateFirstRunSources()
 				Str("Basic.AuxDevice1"), 3);
 }
 
+static void TransitionToScene(obs_scene_t *scene)
+{
+	obs_source_t *transition = obs_get_output_source(0);
+	obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO, 700,
+			obs_scene_get_source(scene));
+	obs_source_release(transition);
+}
+
+static void TransitionToScene(obs_source_t *scene)
+{
+	obs_source_t *transition = obs_get_output_source(0);
+	obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO, 700, scene);
+	obs_source_release(transition);
+}
+
 void OBSBasic::CreateDefaultScene(bool firstStart)
 {
 	disableSaving++;
@@ -402,7 +424,7 @@ void OBSBasic::CreateDefaultScene(bool firstStart)
 	if (firstStart)
 		CreateFirstRunSources();
 
-	obs_set_output_source(0, obs_scene_get_source(scene));
+	TransitionToScene(scene);
 	obs_scene_release(scene);
 
 	disableSaving--;
@@ -488,7 +510,7 @@ void OBSBasic::Load(const char *file)
 		LoadSceneListOrder(sceneOrder);
 
 	curScene = obs_get_source_by_name(sceneName);
-	obs_set_output_source(0, curScene);
+	TransitionToScene(curScene);
 	obs_source_release(curScene);
 
 	obs_data_array_release(sources);
@@ -768,8 +790,6 @@ void OBSBasic::InitOBSCallbacks()
 			OBSBasic::SourceLoaded, this);
 	signalHandlers.emplace_back(obs_get_signal_handler(), "source_remove",
 			OBSBasic::SourceRemoved, this);
-	signalHandlers.emplace_back(obs_get_signal_handler(), "channel_change",
-			OBSBasic::ChannelChanged, this);
 	signalHandlers.emplace_back(obs_get_signal_handler(), "source_activate",
 			OBSBasic::SourceActivated, this);
 	signalHandlers.emplace_back(obs_get_signal_handler(), "source_deactivate",
@@ -880,6 +900,15 @@ void OBSBasic::OBSInit()
 		throw "Failed to initialize service";
 
 	InitPrimitives();
+
+	obs_source_t *transition = obs_source_create("fade_transition",
+			"_fade_transition", NULL, NULL);
+	obs_set_output_source(0, transition);
+
+	signalHandlers.emplace_back(obs_source_get_signal_handler(transition),
+			"transition_start", OBSBasic::TransitionStarted, this);
+
+	obs_source_release(transition);
 
 	{
 		ProfileScope("OBSBasic::Load");
@@ -1174,6 +1203,11 @@ OBSBasic::~OBSBasic()
 		}
 	}
 #endif
+
+	/* release transition */
+	signal_handler_disconnect(obs_source_get_signal_handler(transition),
+			"transition_start", OBSBasic::TransitionStarted, this);
+	obs_set_output_source(0, NULL);
 }
 
 void OBSBasic::SaveProjectNow()
@@ -1317,7 +1351,7 @@ void OBSBasic::AddScene(OBSSource source)
 		auto potential_source = static_cast<obs_source_t*>(data);
 		auto source = obs_source_get_ref(potential_source);
 		if (source && pressed)
-			obs_set_output_source(0, source);
+			TransitionToScene(source);
 		obs_source_release(source);
 	}, static_cast<obs_source_t*>(source));
 
@@ -1729,7 +1763,7 @@ void OBSBasic::DuplicateSelectedScene()
 		source = obs_scene_get_source(scene);
 		obs_scene_release(scene);
 
-		obs_set_output_source(0, source);
+		TransitionToScene(source);
 		return;
 	}
 }
@@ -1923,15 +1957,13 @@ void OBSBasic::SourceRenamed(void *data, calldata_t *params)
 			Q_ARG(QString, QT_UTF8(prevName)));
 }
 
-void OBSBasic::ChannelChanged(void *data, calldata_t *params)
+void OBSBasic::TransitionStarted(void *data, calldata_t *params)
 {
-	obs_source_t *source = (obs_source_t*)calldata_ptr(params, "source");
-	uint32_t channel = (uint32_t)calldata_int(params, "channel");
+	obs_source_t *source = (obs_source_t*)calldata_ptr(params, "target");
 
-	if (channel == 0)
-		QMetaObject::invokeMethod(static_cast<OBSBasic*>(data),
-				"UpdateSceneSelection",
-				Q_ARG(OBSSource, OBSSource(source)));
+	QMetaObject::invokeMethod(static_cast<OBSBasic*>(data),
+			"UpdateSceneSelection",
+			Q_ARG(OBSSource, OBSSource(source)));
 }
 
 void OBSBasic::DrawBackdrop(float cx, float cy)
@@ -2224,7 +2256,10 @@ void OBSBasic::ClearSceneData()
 	ClearListItems(ui->scenes);
 	ClearListItems(ui->sources);
 
-	obs_set_output_source(0, nullptr);
+	obs_source_t *transition = obs_get_output_source(0);
+	obs_transition_clear(transition);
+	obs_source_release(transition);
+
 	obs_set_output_source(1, nullptr);
 	obs_set_output_source(2, nullptr);
 	obs_set_output_source(3, nullptr);
@@ -2359,8 +2394,7 @@ void OBSBasic::on_scenes_currentItemChanged(QListWidgetItem *current,
 		source = obs_scene_get_source(scene);
 	}
 
-	/* TODO: allow transitions */
-	obs_set_output_source(0, source);
+	TransitionToScene(source);
 
 	UNUSED_PARAMETER(prev);
 }
@@ -2485,7 +2519,7 @@ void OBSBasic::on_actionAddScene_triggered()
 		obs_scene_t *scene = obs_scene_create(name.c_str());
 		source = obs_scene_get_source(scene);
 		AddScene(source);
-		obs_set_output_source(0, source);
+		TransitionToScene(source);
 		obs_scene_release(scene);
 	}
 }
