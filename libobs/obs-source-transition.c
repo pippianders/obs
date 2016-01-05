@@ -246,8 +246,6 @@ static void set_source(obs_source_t *transition,
 void obs_transition_set_source(obs_source_t *transition,
 		enum obs_transition_target target, obs_source_t *source)
 {
-	size_t idx = (size_t)target;
-
 	if (!transition_valid(transition, "obs_transition_set_source"))
 		return;
 
@@ -347,6 +345,9 @@ void obs_transition_start(obs_source_t *transition,
 	signal_handler_signal(obs->signals, "source_transition_start", &cd);
 
 	calldata_free(&cd);
+
+	/* TODO: Add mode */
+	UNUSED_PARAMETER(mode);
 }
 
 static float calc_time(obs_source_t *transition, uint64_t ts)
@@ -543,7 +544,6 @@ void obs_transition_enum_sources(obs_source_t *transition,
 }
 
 static inline void render_child(obs_source_t *transition,
-		obs_transition_video_render_callback_t callback,
 		obs_source_t *child, size_t idx)
 {
 	uint32_t cx = transition->transition_actual_cx;
@@ -605,8 +605,7 @@ void obs_transition_video_render(obs_source_t *transition,
 
 		for (size_t i = 0; i < 2; i++) {
 			if (state.s[i]) {
-				render_child(transition, callback, state.s[i],
-						i);
+				render_child(transition, state.s[i], i);
 				tex[i] = get_texture(transition, i);
 				if (!tex[i])
 					tex[i] = obs->video.transparent_texture;
