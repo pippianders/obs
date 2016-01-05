@@ -579,12 +579,12 @@ void obs_register_source_s(const struct obs_source_info *info, size_t size)
 	if ((data.output_flags & OBS_SOURCE_COMPOSITE) != 0) {
 		if ((data.output_flags & OBS_SOURCE_AUDIO) != 0) {
 			source_warn("Source '%s': Composite sources "
-					"cannot be audio sources");
+					"cannot be audio sources", data.id);
 			goto error;
 		}
 		if ((data.output_flags & OBS_SOURCE_ASYNC) != 0) {
 			source_warn("Source '%s': Composite sources "
-					"cannot be async sources");
+					"cannot be async sources", data.id);
 			goto error;
 		}
 	}
