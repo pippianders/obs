@@ -37,6 +37,8 @@ void *fade_create(obs_data_t *settings, obs_source_t *source)
 	fade->a_param = gs_effect_get_param_by_name(effect, "tex_a");
 	fade->b_param = gs_effect_get_param_by_name(effect, "tex_b");
 	fade->fade_param = gs_effect_get_param_by_name(effect, "fade_val");
+
+	UNUSED_PARAMETER(settings);
 	return fade;
 }
 
