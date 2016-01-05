@@ -673,7 +673,7 @@ static void process_audio(obs_source_t *transition, obs_source_t *child,
 		if ((mixers & (1 << mix_idx)) == 0)
 			continue;
 
-		pos = ns_to_audio_frames(sample_rate, ts - min_ts);
+		pos = (size_t)ns_to_audio_frames(sample_rate, ts - min_ts);
 
 		for (size_t ch = 0; ch < channels; ch++) {
 			float *out = output->data[ch];
