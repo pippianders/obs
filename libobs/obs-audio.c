@@ -15,6 +15,7 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
+#include <inttypes.h>
 #include "obs-internal.h"
 
 struct ts_info {
@@ -103,8 +104,8 @@ static inline void discard_audio(struct obs_core_audio *audio,
 	if (ts->end <= source->audio_ts) {
 #if DEBUG_AUDIO == 1
 		blog(LOG_DEBUG, "can't discard, source "
-				"timestamp (%llu) >= "
-				"end timestamp (%llu)",
+				"timestamp (%"PRIu64") >= "
+				"end timestamp (%"PRIu64")",
 				source->audio_ts, ts->end);
 #endif
 		return;
@@ -114,8 +115,8 @@ static inline void discard_audio(struct obs_core_audio *audio,
 #if DEBUG_AUDIO == 1
 		if (is_audio_source) {
 			blog(LOG_DEBUG, "can't discard, source "
-					"timestamp (%llu) < "
-					"start timestamp (%llu)",
+					"timestamp (%"PRIu64") < "
+					"start timestamp (%"PRIu64")",
 					source->audio_ts, ts->start);
 		}
 #endif
@@ -155,7 +156,7 @@ static inline void discard_audio(struct obs_core_audio *audio,
 
 #if DEBUG_AUDIO == 1
 	if (is_audio_source)
-		blog(LOG_DEBUG, "audio discarded, new ts: %llu",
+		blog(LOG_DEBUG, "audio discarded, new ts: %"PRIu64,
 				ts->end);
 #endif
 
@@ -189,9 +190,10 @@ static void add_audio_buffering(struct obs_core_audio *audio,
 	}
 
 	blog(LOG_DEBUG, "adding %d ticks of buffering, total buffering is"
-			" now %d: min_ts (%llu) < start timestamp (%llu)",
+			" now %d: min_ts (%"PRIu64") < start timestamp "
+			"(%"PRIu64")",
 			ticks, audio->total_buffering_ticks, min_ts, ts->start);
-	blog(LOG_DEBUG, "old buffered ts: %llu-%llu",
+	blog(LOG_DEBUG, "old buffered ts: %"PRIu64"-%"PRIu64,
 			ts->start, ts->end);
 
 	new_ts.start = audio->buffered_ts - audio_frames_to_ns(sample_rate,
@@ -206,7 +208,7 @@ static void add_audio_buffering(struct obs_core_audio *audio,
 				cur_ticks * AUDIO_OUTPUT_FRAMES);
 
 #if DEBUG_AUDIO == 1
-		blog(LOG_DEBUG, "add buffered ts: %llu-%llu",
+		blog(LOG_DEBUG, "add buffered ts: %"PRIu64"-%"PRIu64,
 				new_ts.start, new_ts.end);
 #endif
 
