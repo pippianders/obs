@@ -219,7 +219,7 @@ static int obs_init_graphics(struct obs_video_info *ovi)
 {
 	struct obs_core_video *video = &obs->video;
 	uint8_t transparent_tex_data[2*2*4] = {0};
-	uint8_t *transparent_tex = transparent_tex_data;
+	const uint8_t *transparent_tex = transparent_tex_data;
 	bool success = true;
 	int errorcode;
 
