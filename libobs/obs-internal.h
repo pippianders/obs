@@ -610,6 +610,8 @@ struct obs_source {
 	uint32_t                        transition_actual_cy;
 	uint32_t                        transition_cx;
 	uint32_t                        transition_cy;
+	uint32_t                        transition_fixed_duration;
+	bool                            transition_use_fixed_duration : 1;
 	enum obs_transition_mode        transition_mode;
 	enum obs_transition_scale_type  transition_scale_type;
 	struct matrix4                  transition_matrices[2];

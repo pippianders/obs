@@ -331,6 +331,9 @@ void obs_transition_start(obs_source_t *transition,
 	if (!transition_valid(transition, "obs_transition_start"))
 		return;
 
+	if (transition->transition_use_fixed_duration)
+		duration_ms = transition->transition_fixed_duration;
+
 	transition->transition_start_time = os_gettime_ns();
 	transition->transition_duration = (uint64_t)duration_ms * 1000000ULL;
 
@@ -614,9 +617,11 @@ void obs_transition_video_render(obs_source_t *transition,
 			}
 		}
 
-		callback(transition->context.data, tex[0], tex[1], t,
-				transition->transition_actual_cx,
-				transition->transition_actual_cy);
+		if (callback) {
+			callback(transition->context.data, tex[0], tex[1], t,
+					transition->transition_actual_cx,
+					transition->transition_actual_cy);
+		}
 
 	} else if (state.transitioning_audio) {
 		obs_source_video_render(state.s[1]);
@@ -772,4 +777,14 @@ bool obs_transition_audio_render(obs_source_t *transition,
 
 	*ts_out = min_ts;
 	return !!min_ts;
+}
+
+void obs_transition_enable_fixed_duration(obs_source_t *transition,
+		bool enable, uint32_t duration)
+{
+	if (!transition_valid(transition, "obs_transition_enable_fixed_duration"))
+		return;
+
+	transition->transition_use_fixed_duration = enable;
+	transition->transition_fixed_duration = duration;
 }
