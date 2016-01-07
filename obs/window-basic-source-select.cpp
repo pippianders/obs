@@ -154,6 +154,7 @@ bool AddNew(QWidget *parent, const char *id, const char *name,
 
 	obs_source_release(source);
 	obs_scene_release(scene);
+	obs_source_release(transition);
 
 	return success;
 }
