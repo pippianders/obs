@@ -1025,10 +1025,14 @@ EXPORT void obs_transition_set_size(obs_source_t *transition,
 EXPORT void obs_transition_get_size(const obs_source_t *transition,
 		uint32_t *cx, uint32_t *cy);
 
-/* used by transitions */
+/* function used by transitions */
 
-EXPORT void obs_transition_enable_fixed_duration(obs_source_t *transition,
-		bool enable, uint32_t duration_ms);
+/**
+ * Enables fixed transitions (videos or specific types of transitions that
+ * are of fixed duration and linearly interpolated
+ */
+EXPORT void obs_transition_enable_fixed(obs_source_t *transition, bool enable,
+		uint32_t duration_ms);
 
 typedef void (*obs_transition_video_render_callback_t)(void *data,
 		gs_texture_t *a, gs_texture_t *b, float t,

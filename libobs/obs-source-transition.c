@@ -779,10 +779,10 @@ bool obs_transition_audio_render(obs_source_t *transition,
 	return !!min_ts;
 }
 
-void obs_transition_enable_fixed_duration(obs_source_t *transition,
+void obs_transition_enable_fixed(obs_source_t *transition,
 		bool enable, uint32_t duration)
 {
-	if (!transition_valid(transition, "obs_transition_enable_fixed_duration"))
+	if (!transition_valid(transition, "obs_transition_enable_fixed"))
 		return;
 
 	transition->transition_use_fixed_duration = enable;
