@@ -17,7 +17,7 @@ void *cut_create(obs_data_t *settings, obs_source_t *source)
 	cut = bmalloc(sizeof(*cut));
 	cut->source = source;
 
-	obs_transition_enable_fixed_duration(source, true, 0);
+	obs_transition_enable_fixed(source, true, 0);
 	UNUSED_PARAMETER(settings);
 	return cut;
 }
