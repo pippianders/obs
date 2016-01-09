@@ -75,10 +75,11 @@ static const char *source_signals[] = {
 };
 
 bool obs_source_init_context(struct obs_source *source,
-		obs_data_t *settings, const char *name, obs_data_t *hotkey_data)
+		obs_data_t *settings, const char *name, obs_data_t *hotkey_data,
+		bool private)
 {
 	if (!obs_context_data_init(&source->context, settings, name,
-				hotkey_data, false))
+				hotkey_data, private))
 		return false;
 
 	return signal_handler_add_array(source->context.signals,
@@ -274,8 +275,9 @@ static void obs_source_init_audio_hotkeys(struct obs_source *source)
 			obs_source_hotkey_push_to_talk, source);
 }
 
-obs_source_t *obs_source_create(const char *id, const char *name,
-		obs_data_t *settings, obs_data_t *hotkey_data)
+static obs_source_t *obs_source_create_internal(const char *id,
+		const char *name, obs_data_t *settings,
+		obs_data_t *hotkey_data, bool private)
 {
 	struct obs_source *source = bzalloc(sizeof(struct obs_source));
 
@@ -293,7 +295,8 @@ obs_source_t *obs_source_create(const char *id, const char *name,
 	source->push_to_mute_key = OBS_INVALID_HOTKEY_ID;
 	source->push_to_talk_key = OBS_INVALID_HOTKEY_ID;
 
-	if (!obs_source_init_context(source, settings, name, hotkey_data))
+	if (!obs_source_init_context(source, settings, name, hotkey_data,
+				private))
 		goto fail;
 
 	if (info && info->get_defaults)
@@ -302,7 +305,8 @@ obs_source_t *obs_source_create(const char *id, const char *name,
 	if (!obs_source_init(source))
 		goto fail;
 
-	obs_source_init_audio_hotkeys(source);
+	if (!private)
+		obs_source_init_audio_hotkeys(source);
 
 	/* allow the source to be created even if creation fails so that the
 	 * user's data doesn't become lost */
@@ -323,6 +327,18 @@ fail:
 	blog(LOG_ERROR, "obs_source_create failed");
 	obs_source_destroy(source);
 	return NULL;
+}
+
+obs_source_t *obs_source_create(const char *id, const char *name,
+		obs_data_t *settings, obs_data_t *hotkey_data)
+{
+	return obs_source_create_internal(id, name, settings, hotkey_data,
+			false);
+}
+
+obs_source_t *obs_source_create_private(const char *id, obs_data_t *settings)
+{
+	return obs_source_create_internal(id, NULL, settings, NULL, true);
 }
 
 void obs_source_frame_init(struct obs_source_frame *frame,
@@ -2452,7 +2468,9 @@ void obs_source_set_name(obs_source_t *source, const char *name)
 		calldata_set_ptr(&data, "source", source);
 		calldata_set_string(&data, "new_name", source->context.name);
 		calldata_set_string(&data, "prev_name", prev_name);
-		signal_handler_signal(obs->signals, "source_rename", &data);
+		if (!source->context.private)
+			signal_handler_signal(obs->signals, "source_rename",
+					&data);
 		signal_handler_signal(source->context.signals, "rename", &data);
 		calldata_free(&data);
 		bfree(prev_name);
@@ -2661,7 +2679,9 @@ void obs_source_set_volume(obs_source_t *source, float volume)
 		calldata_set_float(&data, "volume", volume);
 
 		signal_handler_signal(source->context.signals, "volume", &data);
-		signal_handler_signal(obs->signals, "source_volume", &data);
+		if (!source->context.private)
+			signal_handler_signal(obs->signals, "source_volume",
+					&data);
 
 		volume = (float)calldata_float(&data, "volume");
 		calldata_free(&data);
