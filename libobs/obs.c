@@ -1257,9 +1257,11 @@ obs_source_t *obs_get_source_by_name(const char *name)
 	source = data->first_source;
 
 	while (source) {
-		if (strcmp(source->context.name, name) == 0) {
-			obs_source_addref(source);
-			break;
+		if (!source->private) {
+			if (strcmp(source->context.name, name) == 0) {
+				obs_source_addref(source);
+				break;
+			}
 		}
 
 		source = (struct obs_source*)source->context.next;
@@ -1279,7 +1281,7 @@ static inline void *get_context_by_name(void *vfirst, const char *name,
 
 	context = *first;
 	while (context) {
-		if (strcmp(context->name, name) == 0) {
+		if (!context->private && strcmp(context->name, name) == 0) {
 			context = addref(context);
 			break;
 		}
@@ -1614,7 +1616,7 @@ obs_data_array_t *obs_save_sources_filtered(obs_save_source_filter_cb cb,
 
 	while (source) {
 		if ((source->info.type != OBS_SOURCE_TYPE_FILTER) != 0 &&
-				cb(data_, source)) {
+				!source->context.private && cb(data_, source)) {
 			obs_data_t *source_data = obs_save_source(source);
 
 			obs_data_array_push_back(array, source_data);
@@ -1642,8 +1644,11 @@ obs_data_array_t *obs_save_sources(void)
 }
 
 /* ensures that names are never blank */
-static inline char *dup_name(const char *name)
+static inline char *dup_name(const char *name, bool private)
 {
+	if (private && !name)
+		return NULL;
+
 	if (!name || !*name) {
 		struct dstr unnamed = {0};
 		dstr_printf(&unnamed, "__unnamed%04lld",
@@ -1659,10 +1664,12 @@ static inline bool obs_context_data_init_wrap(
 		struct obs_context_data *context,
 		obs_data_t              *settings,
 		const char              *name,
-		obs_data_t              *hotkey_data)
+		obs_data_t              *hotkey_data,
+		bool                    private)
 {
 	assert(context);
 	memset(context, 0, sizeof(*context));
+	context->private = private;
 
 	pthread_mutex_init_value(&context->rename_cache_mutex);
 	if (pthread_mutex_init(&context->rename_cache_mutex, NULL) < 0)
@@ -1676,7 +1683,7 @@ static inline bool obs_context_data_init_wrap(
 	if (!context->procs)
 		return false;
 
-	context->name        = dup_name(name);
+	context->name        = dup_name(name, private);
 	context->settings    = obs_data_newref(settings);
 	context->hotkey_data = obs_data_newref(hotkey_data);
 	return true;
@@ -1686,9 +1693,11 @@ bool obs_context_data_init(
 		struct obs_context_data *context,
 		obs_data_t              *settings,
 		const char              *name,
-		obs_data_t              *hotkey_data)
+		obs_data_t              *hotkey_data,
+		bool                    private)
 {
-	if (obs_context_data_init_wrap(context, settings, name, hotkey_data)) {
+	if (obs_context_data_init_wrap(context, settings, name, hotkey_data,
+				private)) {
 		return true;
 	} else {
 		obs_context_data_free(context);
@@ -1754,7 +1763,7 @@ void obs_context_data_setname(struct obs_context_data *context,
 
 	if (context->name)
 		da_push_back(context->rename_cache, &context->name);
-	context->name = dup_name(name);
+	context->name = dup_name(name, context->private);
 
 	pthread_mutex_unlock(&context->rename_cache_mutex);
 }
