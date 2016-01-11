@@ -336,9 +336,10 @@ obs_source_t *obs_source_create(const char *id, const char *name,
 			false);
 }
 
-obs_source_t *obs_source_create_private(const char *id, obs_data_t *settings)
+obs_source_t *obs_source_create_private(const char *id, const char *name,
+		obs_data_t *settings)
 {
-	return obs_source_create_internal(id, NULL, settings, NULL, true);
+	return obs_source_create_internal(id, name, settings, NULL, true);
 }
 
 void obs_source_frame_init(struct obs_source_frame *frame,
