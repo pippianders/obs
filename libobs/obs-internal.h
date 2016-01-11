@@ -609,6 +609,7 @@ struct obs_source {
 	/* transitions */
 	uint64_t                        transition_start_time;
 	uint64_t                        transition_duration;
+	pthread_mutex_t                 transition_tex_mutex;
 	gs_texrender_t                  *transition_texrender[2];
 	pthread_mutex_t                 transition_mutex;
 	obs_source_t                    *transition_sources[2];

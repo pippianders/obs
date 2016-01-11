@@ -22,6 +22,13 @@
 #define unlock_transition(transition) \
 	pthread_mutex_unlock(&transition->transition_mutex);
 
+#define trylock_texures(transition) \
+	pthread_mutex_trylock(&transition->transition_tex_mutex);
+#define lock_texures(transition) \
+	pthread_mutex_lock(&transition->transition_tex_mutex);
+#define unlock_textures(transition) \
+	pthread_mutex_unlock(&transition->transition_tex_mutex);
+
 static inline bool transition_valid(const obs_source_t *transition,
 		const char *func)
 {
@@ -36,7 +43,10 @@ static inline bool transition_valid(const obs_source_t *transition,
 bool obs_transition_init(obs_source_t *transition)
 {
 	pthread_mutex_init_value(&transition->transition_mutex);
+	pthread_mutex_init_value(&transition->transition_tex_mutex);
 	if (pthread_mutex_init(&transition->transition_mutex, NULL) != 0)
+		return false;
+	if (pthread_mutex_init(&transition->transition_tex_mutex, NULL) != 0)
 		return false;
 
 	transition->transition_alignment = OBS_ALIGN_LEFT | OBS_ALIGN_TOP;
@@ -53,6 +63,7 @@ bool obs_transition_init(obs_source_t *transition)
 void obs_transition_free(obs_source_t *transition)
 {
 	pthread_mutex_destroy(&transition->transition_mutex);
+	pthread_mutex_destroy(&transition->transition_tex_mutex);
 
 	gs_enter_context(obs->video.graphics);
 	gs_texrender_destroy(transition->transition_texrender[0]);
@@ -187,8 +198,11 @@ void obs_transition_tick(obs_source_t *transition)
 	recalculate_transition_size(transition);
 	recalculate_transition_matrices(transition);
 
-	gs_texrender_reset(transition->transition_texrender[0]);
-	gs_texrender_reset(transition->transition_texrender[1]);
+	if (trylock_textures(transition) == 0) {
+		gs_texrender_reset(transition->transition_texrender[0]);
+		gs_texrender_reset(transition->transition_texrender[1]);
+		unlock_textures(transition);
+	}
 }
 
 static void set_source(obs_source_t *transition,
@@ -585,6 +599,7 @@ void obs_transition_video_render(obs_source_t *transition,
 		obs_transition_video_render_callback_t callback)
 {
 	struct transition_state state;
+	bool locked = false;
 	float t;
 
 	if (!transition_valid(transition, "obs_transition_video_render"))
@@ -603,7 +618,10 @@ void obs_transition_video_render(obs_source_t *transition,
 
 	unlock_transition(transition);
 
-	if (state.transitioning_video) {
+	if (state.transitioning_video)
+		locked = trylock_textures(transition) == 0;
+
+	if (state.transitioning_video && locked) {
 		gs_texture_t *tex[2];
 
 		for (size_t i = 0; i < 2; i++) {
@@ -629,6 +647,9 @@ void obs_transition_video_render(obs_source_t *transition,
 	} else {
 		obs_source_video_render(state.s[0]);
 	}
+
+	if (locked)
+		unlock_textures(transition);
 
 	obs_source_release(state.s[0]);
 	obs_source_release(state.s[1]);
@@ -787,4 +808,59 @@ void obs_transition_enable_fixed(obs_source_t *transition,
 
 	transition->transition_use_fixed_duration = enable;
 	transition->transition_fixed_duration = duration;
+}
+
+static inline obs_source_t *copy_source_state(obs_source_transition_t *tr_dest,
+		obs_transition_t *tr_source, size_t idx)
+{
+	obs_source_t *old_child = tr_dest->transition_sources[idx];
+	obs_source_t *new_child = tr_source->transition_sources[idx];
+	bool active = tr_source->transition_source_active[idx];
+
+	if (old_child && tr_dest->transition_source_active[idx])
+		obs_source_remove_active_child(tr_dest, old_child);
+
+	tr_dest->transition_sources[idx] = new_child;
+	tr_dest->transition_source_active[idx] = active;
+
+	if (active && new_child)
+		obs_source_add_active_child(tr_dest, new_child);
+
+	return old_child;
+}
+
+void obs_transition_swap_begin(obs_source_t *tr_dest, obs_source_t *tr_source)
+{
+	obs_source_t *old_children[2];
+
+	lock_textures(tr_source);
+	lock_textures(tr_dest);
+
+	lock_transition(tr_source);
+	lock_transition(tr_dest);
+
+	for (size_t i = 0; i < 2; i++)
+		old_children[i] = copy_source_state(tr_dest, tr_source, i);
+
+	unlock_transition(tr_dest);
+	unlock_transition(tr_source);
+
+	for (size_t i = 0; i < 2; i++)
+		obs_source_release(old_children[i]);
+}
+
+void obs_transition_swap_end(obs_source_t *tr_dest, obs_source_t *tr_source)
+{
+	obs_transition_clear(tr_source);
+
+	for (size_t i = 0; i < 2; i++) {
+		gs_texrender_t *dest = tr_dest->transition_texrender[i];
+		gs_texrender_t *source = tr_source->transition_texrender[i];
+
+		tr_dest->transition_texrender[i] = source;
+		tr_source->transition_texrender[i] = dest;
+	}
+
+	unlock_textures(tr_dest);
+	unlock_textures(tr_source);
 }

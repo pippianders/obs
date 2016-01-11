@@ -1050,6 +1050,11 @@ EXPORT bool obs_transition_audio_render(obs_source_t *transition,
 		obs_transition_audio_mix_callback_t mix_a_callback,
 		obs_transition_audio_mix_callback_t mix_b_callback);
 
+/* swaps transition sources and textures as an optimization and to reduce
+ * memory usage when switching between transitions */
+void obs_transition_swap_begin(obs_source_t *tr_dest, obs_source_t *tr_source);
+void obs_transition_swap_end(obs_source_t *tr_dest, obs_source_t *tr_source);
+
 
 /* ------------------------------------------------------------------------- */
 /* Scenes */
