@@ -274,7 +274,10 @@ void VolumeMeter::setLevels(float nmag, float npeak, float npeakHold)
 	peak     = npeak;
 	peakHold = npeakHold;
 
-	update();
+	uint64_t curUpdateTime = os_gettime_ns();
+	if ((curUpdateTime - lastUpdateTime) > 50000000)
+		update();
+	lastUpdateTime = curUpdateTime;
 
 	if (resetTimer->isActive())
 		resetTimer->stop();

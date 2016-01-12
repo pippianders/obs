@@ -16,6 +16,7 @@ class VolumeMeter : public QWidget
 private:
 	float mag, peak, peakHold;
 	QColor bkColor, magColor, peakColor, peakHoldColor;
+	uint64_t lastUpdateTime = 0;
 	QTimer *resetTimer;
 
 public:
