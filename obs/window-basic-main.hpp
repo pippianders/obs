@@ -192,7 +192,15 @@ private:
 	obs_hotkey_pair_id streamingHotkeys, recordingHotkeys;
 	obs_hotkey_id forceStreamingStopHotkey;
 
-	obs_source_t *transition = nullptr;
+	void InitDefaultTransitions();
+	void TransitionToScene(obs_scene_t *scene);
+	void TransitionToScene(obs_source_t *scene);
+	obs_source_t *FindTransition(const char *name);
+	void SetTransition(obs_source_t *transition);
+	OBSSource GetCurrentTransition();
+
+	std::vector<OBSSource> transitions;
+	obs_source_t *fadeTransition;
 
 public slots:
 	void StartStreaming();
@@ -219,7 +227,6 @@ private slots:
 	void RemoveSceneItem(OBSSceneItem item);
 	void AddScene(OBSSource source);
 	void RemoveScene(OBSSource source);
-	void UpdateSceneSelection(OBSSource source);
 	void RenameSources(QString newName, QString prevName);
 
 	void SelectSceneItem(OBSScene scene, OBSSceneItem item, bool select);
@@ -299,6 +306,7 @@ public:
 	void CreateSourcePopupMenu(QListWidgetItem *item, bool preview);
 
 	void UpdateTitleBar();
+	void UpdateSceneSelection(OBSSource source);
 
 protected:
 	virtual void closeEvent(QCloseEvent *event) override;
@@ -372,6 +380,9 @@ private slots:
 
 	void on_actionShowSettingsFolder_triggered();
 	void on_actionShowProfileFolder_triggered();
+
+	void on_transitions_currentIndexChanged(int index);
+	void on_transitionProps_clicked();
 
 	void logUploadFinished(const QString &text, const QString &error);
 

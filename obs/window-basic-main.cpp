@@ -247,7 +247,8 @@ static void SaveAudioDevice(const char *name, int channel, obs_data_t *parent,
 	obs_source_release(source);
 }
 
-static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
+static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder,
+		int transitionDuration)
 {
 	obs_data_t *saveData = obs_data_create();
 
@@ -260,13 +261,8 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
 	SaveAudioDevice(AUX_AUDIO_2,     4, saveData, audioSources);
 	SaveAudioDevice(AUX_AUDIO_3,     5, saveData, audioSources);
 
-	obs_source_t *transition = obs_get_output_source(0);
-
 	auto FilterAudioSources = [&](obs_source_t *source)
 	{
-		if (source == transition)
-			return false;
-
 		return find(begin(audioSources), end(audioSources), source) ==
 				end(audioSources);
 	};
@@ -278,6 +274,7 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
 		return (*static_cast<FilterAudioSources_t*>(data))(source);
 	}, static_cast<void*>(&FilterAudioSources));
 
+	obs_source_t *transition = obs_get_output_source(0);
 	obs_source_t *currentScene = obs_transition_get_active_source(
 			transition);
 	const char   *sceneName   = obs_source_get_name(currentScene);
@@ -290,8 +287,13 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder)
 	obs_data_set_string(saveData, "name", sceneCollection);
 	obs_data_set_array(saveData, "sources", sourcesArray);
 	obs_data_array_release(sourcesArray);
-	obs_source_release(currentScene);
+
+	obs_data_set_string(saveData, "current_transition",
+			obs_source_get_name(transition));
+	obs_data_set_int(saveData, "transition_duration", transitionDuration);
 	obs_source_release(transition);
+
+	obs_source_release(currentScene);
 
 	return saveData;
 }
@@ -346,7 +348,8 @@ obs_data_array_t *OBSBasic::SaveSceneListOrder()
 void OBSBasic::Save(const char *file)
 {
 	obs_data_array_t *sceneOrder = SaveSceneListOrder();
-	obs_data_t *saveData  = GenerateSaveData(sceneOrder);
+	obs_data_t *saveData  = GenerateSaveData(sceneOrder,
+			ui->transitionDuration->value());
 
 	if (!obs_data_save_json_safe(saveData, file, "tmp", "bak"))
 		blog(LOG_ERROR, "Could not save scene data to %s", file);
@@ -401,26 +404,14 @@ void OBSBasic::CreateFirstRunSources()
 				Str("Basic.AuxDevice1"), 3);
 }
 
-static void TransitionToScene(obs_scene_t *scene)
-{
-	obs_source_t *transition = obs_get_output_source(0);
-	obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO, 700,
-			obs_scene_get_source(scene));
-	obs_source_release(transition);
-}
-
-static void TransitionToScene(obs_source_t *scene)
-{
-	obs_source_t *transition = obs_get_output_source(0);
-	obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO, 700, scene);
-	obs_source_release(transition);
-}
-
 void OBSBasic::CreateDefaultScene(bool firstStart)
 {
 	disableSaving++;
 
 	ClearSceneData();
+	InitDefaultTransitions();
+	ui->transitionDuration->setValue(300);
+	SetTransition(fadeTransition);
 
 	obs_scene_t  *scene  = obs_scene_create(Str("Basic.Scene"));
 
@@ -485,11 +476,21 @@ void OBSBasic::Load(const char *file)
 	}
 
 	ClearSceneData();
+	InitDefaultTransitions();
 
 	obs_data_array_t *sceneOrder = obs_data_get_array(data, "scene_order");
 	obs_data_array_t *sources    = obs_data_get_array(data, "sources");
 	const char       *sceneName = obs_data_get_string(data,
 			"current_scene");
+	const char       *transitionName = obs_data_get_string(data,
+			"current_transition");
+
+	int newDuration = obs_data_get_int(data, "transition_duration");
+	if (!newDuration)
+		newDuration = 300;
+
+	if (!transitionName)
+		transitionName = obs_source_get_name(fadeTransition);
 
 	const char *curSceneCollection = config_get_string(
 			App()->GlobalConfig(), "Basic", "SceneCollection");
@@ -498,6 +499,7 @@ void OBSBasic::Load(const char *file)
 
 	const char       *name = obs_data_get_string(data, "name");
 	obs_source_t     *curScene;
+	obs_source_t     *curTransition;
 
 	if (!name || !*name)
 		name = curSceneCollection;
@@ -512,6 +514,13 @@ void OBSBasic::Load(const char *file)
 
 	if (sceneOrder)
 		LoadSceneListOrder(sceneOrder);
+
+	curTransition = FindTransition(transitionName);
+	if (!curTransition)
+		curTransition = fadeTransition;
+
+	ui->transitionDuration->setValue(newDuration);
+	SetTransition(curTransition);
 
 	curScene = obs_get_source_by_name(sceneName);
 	TransitionToScene(curScene);
@@ -905,15 +914,6 @@ void OBSBasic::OBSInit()
 
 	InitPrimitives();
 
-	transition = obs_source_create("fade_transition",
-			"_fade_transition", NULL, NULL);
-	obs_set_output_source(0, transition);
-
-	signalHandlers.emplace_back(obs_source_get_signal_handler(transition),
-			"transition_start", OBSBasic::TransitionStarted, this);
-
-	obs_source_release(transition);
-
 	{
 		ProfileScope("OBSBasic::Load");
 		disableSaving--;
@@ -1231,11 +1231,6 @@ OBSBasic::~OBSBasic()
 		}
 	}
 #endif
-
-	/* release transition */
-	signal_handler_disconnect(obs_source_get_signal_handler(transition),
-			"transition_start", OBSBasic::TransitionStarted, this);
-	obs_set_output_source(0, NULL);
 }
 
 void OBSBasic::SaveProjectNow()
@@ -1376,10 +1371,13 @@ void OBSBasic::AddScene(OBSSource source)
 			[](void *data,
 				obs_hotkey_id, obs_hotkey_t*, bool pressed)
 	{
+		OBSBasic *main =
+			reinterpret_cast<OBSBasic*>(App()->GetMainWindow());
+
 		auto potential_source = static_cast<obs_source_t*>(data);
 		auto source = obs_source_get_ref(potential_source);
 		if (source && pressed)
-			TransitionToScene(source);
+			main->TransitionToScene(source);
 		obs_source_release(source);
 	}, static_cast<obs_source_t*>(source));
 
@@ -1789,10 +1787,10 @@ void OBSBasic::DuplicateSelectedScene()
 		obs_scene_t *scene = obs_scene_duplicate(curScene,
 				name.c_str());
 		source = obs_scene_get_source(scene);
-		obs_scene_release(scene);
-
+		AddScene(source);
 		TransitionToScene(source);
-		return;
+		obs_scene_release(scene);
+		break;
 	}
 }
 
@@ -1983,15 +1981,6 @@ void OBSBasic::SourceRenamed(void *data, calldata_t *params)
 			"RenameSources",
 			Q_ARG(QString, QT_UTF8(newName)),
 			Q_ARG(QString, QT_UTF8(prevName)));
-}
-
-void OBSBasic::TransitionStarted(void *data, calldata_t *params)
-{
-	obs_source_t *source = (obs_source_t*)calldata_ptr(params, "target");
-
-	QMetaObject::invokeMethod(static_cast<OBSBasic*>(data),
-			"UpdateSceneSelection",
-			Q_ARG(OBSSource, OBSSource(source)));
 }
 
 void OBSBasic::DrawBackdrop(float cx, float cy)
@@ -2284,10 +2273,7 @@ void OBSBasic::ClearSceneData()
 	ClearListItems(ui->scenes);
 	ClearListItems(ui->sources);
 
-	obs_source_t *transition = obs_get_output_source(0);
-	obs_transition_clear(transition);
-	obs_source_release(transition);
-
+	obs_set_output_source(0, nullptr);
 	obs_set_output_source(1, nullptr);
 	obs_set_output_source(2, nullptr);
 	obs_set_output_source(3, nullptr);
@@ -2302,6 +2288,9 @@ void OBSBasic::ClearSceneData()
 	};
 
 	obs_enum_sources(cb, nullptr);
+
+	ui->transitions->clear();
+	transitions.clear();
 
 	disableSaving--;
 
