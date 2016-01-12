@@ -50,7 +50,7 @@ static inline void mix_audio(struct audio_output_data *mixes,
 	size_t total_floats = AUDIO_OUTPUT_FRAMES;
 	size_t start_point = 0;
 
-	if (ts->end <= source->audio_ts)
+	if (source->audio_ts < ts->start || ts->end <= source->audio_ts)
 		return;
 
 	if (source->audio_ts != ts->start) {
