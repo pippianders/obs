@@ -1055,8 +1055,10 @@ EXPORT bool obs_transition_audio_render(obs_source_t *transition,
 
 /* swaps transition sources and textures as an optimization and to reduce
  * memory usage when switching between transitions */
-void obs_transition_swap_begin(obs_source_t *tr_dest, obs_source_t *tr_source);
-void obs_transition_swap_end(obs_source_t *tr_dest, obs_source_t *tr_source);
+EXPORT void obs_transition_swap_begin(obs_source_t *tr_dest,
+		obs_source_t *tr_source);
+EXPORT void obs_transition_swap_end(obs_source_t *tr_dest,
+		obs_source_t *tr_source);
 
 
 /* ------------------------------------------------------------------------- */
