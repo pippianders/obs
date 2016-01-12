@@ -316,7 +316,8 @@ static obs_source_t *obs_source_create_internal(const char *id,
 	if (!source->context.data)
 		blog(LOG_ERROR, "Failed to create source '%s'!", name);
 
-	blog(LOG_INFO, "source '%s' (%s) created", name, id);
+	blog(LOG_INFO, "%ssource '%s' (%s) created",
+			private ? "private " : "", name, id);
 	obs_source_dosignal(source, "source_create", NULL);
 
 	source->flags = source->default_flags;
@@ -397,7 +398,9 @@ void obs_source_destroy(struct obs_source *source)
 
 	obs_context_data_remove(&source->context);
 
-	blog(LOG_INFO, "source '%s' destroyed", source->context.name);
+	blog(LOG_INFO, "%ssource '%s' destroyed",
+			source->context.private ? "private " : "",
+			source->context.name);
 
 	obs_source_dosignal(source, "source_destroy", "destroy");
 
