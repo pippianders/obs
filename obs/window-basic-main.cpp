@@ -418,7 +418,7 @@ void OBSBasic::CreateDefaultScene(bool firstStart)
 	if (firstStart)
 		CreateFirstRunSources();
 
-	TransitionToScene(scene);
+	TransitionToScene(scene, true);
 	AddScene(obs_scene_get_source(scene));
 	obs_scene_release(scene);
 
@@ -523,7 +523,7 @@ void OBSBasic::Load(const char *file)
 	SetTransition(curTransition);
 
 	curScene = obs_get_source_by_name(sceneName);
-	TransitionToScene(curScene);
+	TransitionToScene(curScene, true);
 	obs_source_release(curScene);
 
 	obs_data_array_release(sources);
@@ -1788,7 +1788,7 @@ void OBSBasic::DuplicateSelectedScene()
 				name.c_str(), OBS_SCENE_DUP_REFS);
 		source = obs_scene_get_source(scene);
 		AddScene(source);
-		TransitionToScene(source);
+		TransitionToScene(source, true);
 		obs_scene_release(scene);
 		break;
 	}

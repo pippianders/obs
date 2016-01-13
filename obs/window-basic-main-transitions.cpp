@@ -61,21 +61,22 @@ obs_source_t *OBSBasic::FindTransition(const char *name)
 	return nullptr;
 }
 
-void OBSBasic::TransitionToScene(obs_scene_t *scene)
+void OBSBasic::TransitionToScene(obs_scene_t *scene, bool force)
 {
-	obs_source_t *transition = obs_get_output_source(0);
 	obs_source_t *source = obs_scene_get_source(scene);
-	obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO,
-			ui->transitionDuration->value(), source);
-	UpdateSceneSelection(source);
-	obs_source_release(transition);
+	TransitionToScene(source, force);
 }
 
-void OBSBasic::TransitionToScene(obs_source_t *scene)
+void OBSBasic::TransitionToScene(obs_source_t *scene, bool force)
 {
 	obs_source_t *transition = obs_get_output_source(0);
-	obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO,
-			ui->transitionDuration->value(), scene);
+
+	if (force)
+		obs_transition_set(transition, scene);
+	else
+		obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO,
+				ui->transitionDuration->value(), scene);
+
 	UpdateSceneSelection(scene);
 	obs_source_release(transition);
 }

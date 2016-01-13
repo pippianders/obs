@@ -193,8 +193,8 @@ private:
 	obs_hotkey_id forceStreamingStopHotkey;
 
 	void InitDefaultTransitions();
-	void TransitionToScene(obs_scene_t *scene);
-	void TransitionToScene(obs_source_t *scene);
+	void TransitionToScene(obs_scene_t *scene, bool force = false);
+	void TransitionToScene(obs_source_t *scene, bool force = false);
 	obs_source_t *FindTransition(const char *name);
 	void SetTransition(obs_source_t *transition);
 	OBSSource GetCurrentTransition();
