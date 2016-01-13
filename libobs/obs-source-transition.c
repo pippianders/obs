@@ -257,15 +257,6 @@ static void set_source(obs_source_t *transition,
 	obs_source_release(old_child);
 }
 
-void obs_transition_set_source(obs_source_t *transition,
-		enum obs_transition_target target, obs_source_t *source)
-{
-	if (!transition_valid(transition, "obs_transition_set_source"))
-		return;
-
-	set_source(transition, target, source, NULL);
-}
-
 obs_source_t *obs_transition_get_source(obs_source_t *transition,
 		enum obs_transition_target target)
 {
@@ -386,6 +377,35 @@ void obs_transition_start(obs_source_t *transition,
 
 	/* TODO: Add mode */
 	UNUSED_PARAMETER(mode);
+}
+
+void obs_transition_set(obs_source_t *transition, obs_source_t *source)
+{
+	obs_source_t *s[2];
+	bool active[2];
+
+	if (!transition_valid(transition, "obs_transition_clear"))
+		return;
+
+	obs_source_addref(source);
+
+	lock_transition(transition);
+	for (size_t i = 0; i < 2; i++) {
+		s[i] = transition->transition_sources[i];
+		active[i] = transition->transition_source_active[i];
+		transition->transition_sources[i] = NULL;
+		transition->transition_source_active[i] = false;
+	}
+	transition->transition_sources[0] = source;
+	transition->transitioning_video = false;
+	transition->transitioning_audio = false;
+	unlock_transition(transition);
+
+	for (size_t i = 0; i < 2; i++) {
+		if (s[i] && active[i])
+			obs_source_remove_active_child(transition, s[i]);
+		obs_source_release(s[i]);
+	}
 }
 
 static float calc_time(obs_source_t *transition, uint64_t ts)

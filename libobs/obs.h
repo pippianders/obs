@@ -1001,8 +1001,6 @@ enum obs_transition_target {
 	OBS_TRANSITION_SOURCE_B
 };
 
-EXPORT void obs_transition_set_source(obs_source_t *transition,
-		enum obs_transition_target target, obs_source_t *source);
 EXPORT obs_source_t *obs_transition_get_source(obs_source_t *transition,
 		enum obs_transition_target target);
 EXPORT void obs_transition_clear(obs_source_t *transition);
@@ -1016,6 +1014,8 @@ enum obs_transition_mode {
 EXPORT void obs_transition_start(obs_source_t *transition,
 		enum obs_transition_mode mode, uint32_t duration_ms,
 		obs_source_t *dest);
+
+EXPORT void obs_transition_set(obs_source_t *transition, obs_source_t *source);
 
 enum obs_transition_scale_type {
 	OBS_TRANSITION_SCALE_MAX_ONLY,
