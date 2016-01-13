@@ -1785,7 +1785,7 @@ void OBSBasic::DuplicateSelectedScene()
 		}
 
 		obs_scene_t *scene = obs_scene_duplicate(curScene,
-				name.c_str());
+				name.c_str(), OBS_SCENE_DUP_REFS);
 		source = obs_scene_get_source(scene);
 		AddScene(source);
 		TransitionToScene(source);
