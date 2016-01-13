@@ -744,6 +744,13 @@ obs_scene_t *obs_scene_create(const char *name)
 	return source->context.data;
 }
 
+obs_scene_t *obs_scene_create_private(const char *name)
+{
+	struct obs_source *source = obs_source_create_private("scene", name,
+			NULL);
+	return source->context.data;
+}
+
 obs_scene_t *obs_scene_duplicate(obs_scene_t *scene, const char *name)
 {
 	struct obs_scene *new_scene = obs_scene_create(name);
