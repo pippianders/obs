@@ -30,6 +30,7 @@
 #include "window-basic-filters.hpp"
 
 #include <util/platform.h>
+#include <util/threading.h>
 #include <util/util.hpp>
 
 #include <QPointer>
@@ -49,11 +50,23 @@ class QNetworkReply;
 #define SIMPLE_ENCODER_X264                    "x264"
 #define SIMPLE_ENCODER_X264_LOWCPU             "x264_lowcpu"
 
+#define PREVIEW_EDGE_SIZE 10
+
 struct BasicOutputHandler;
 
 enum class QtDataRole {
 	OBSRef = Qt::UserRole,
 	OBSSignals,
+};
+
+struct QuickTransition {
+	OBSSource source;
+	int duration = 0;
+
+	inline QuickTransition() {}
+	inline QuickTransition(OBSSource source_, int duration_)
+		: source(source_), duration(duration_)
+	{}
 };
 
 class OBSBasic : public OBSMainWindow {
@@ -201,6 +214,29 @@ private:
 
 	std::vector<OBSSource> transitions;
 	obs_source_t *fadeTransition;
+
+	void CreateProgramDisplay();
+	void CreateProgramOptions();
+
+	void SetQuickTransition(int idx);
+	void ResizeProgram(uint32_t cx, uint32_t cy);
+	void SetCurrentScene(obs_scene_t *scene, bool force = false);
+	void SetCurrentScene(obs_source_t *scene, bool force = false);
+	static void RenderProgram(void *data, uint32_t cx, uint32_t cy);
+
+	std::vector<QuickTransition> quickTranstions;
+	QPointer<QWidget> programOptions;
+	QPointer<OBSQTDisplay> program;
+	volatile bool previewProgramMode = false;
+
+	int   programX = 0,  programY = 0;
+	int   programCX = 0, programCY = 0;
+	float programScale = 0.0f;
+
+	inline bool IsPreviewProgramMode() const
+	{
+		return os_atomic_load_bool(&previewProgramMode);
+	}
 
 public slots:
 	void StartStreaming();
@@ -383,6 +419,8 @@ private slots:
 
 	void on_transitions_currentIndexChanged(int index);
 	void on_transitionProps_clicked();
+
+	void on_modeSwitch_clicked();
 
 	void logUploadFinished(const QString &text, const QString &error);
 

@@ -56,8 +56,6 @@
 #include <QScreen>
 #include <QWindow>
 
-#define PREVIEW_EDGE_SIZE 10
-
 using namespace std;
 
 namespace {
@@ -248,7 +246,7 @@ static void SaveAudioDevice(const char *name, int channel, obs_data_t *parent,
 }
 
 static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder,
-		int transitionDuration)
+		int transitionDuration, OBSScene &scene)
 {
 	obs_data_t *saveData = obs_data_create();
 
@@ -275,8 +273,7 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder,
 	}, static_cast<void*>(&FilterAudioSources));
 
 	obs_source_t *transition = obs_get_output_source(0);
-	obs_source_t *currentScene = obs_transition_get_active_source(
-			transition);
+	obs_source_t *currentScene = obs_scene_get_source(scene);
 	const char   *sceneName   = obs_source_get_name(currentScene);
 
 	const char *sceneCollection = config_get_string(App()->GlobalConfig(),
@@ -292,8 +289,6 @@ static obs_data_t *GenerateSaveData(obs_data_array_t *sceneOrder,
 			obs_source_get_name(transition));
 	obs_data_set_int(saveData, "transition_duration", transitionDuration);
 	obs_source_release(transition);
-
-	obs_source_release(currentScene);
 
 	return saveData;
 }
@@ -347,9 +342,10 @@ obs_data_array_t *OBSBasic::SaveSceneListOrder()
 
 void OBSBasic::Save(const char *file)
 {
+	OBSScene scene = GetCurrentScene();
 	obs_data_array_t *sceneOrder = SaveSceneListOrder();
 	obs_data_t *saveData  = GenerateSaveData(sceneOrder,
-			ui->transitionDuration->value());
+			ui->transitionDuration->value(), scene);
 
 	if (!obs_data_save_json_safe(saveData, file, "tmp", "bak"))
 		blog(LOG_ERROR, "Could not save scene data to %s", file);
@@ -418,7 +414,7 @@ void OBSBasic::CreateDefaultScene(bool firstStart)
 	if (firstStart)
 		CreateFirstRunSources();
 
-	TransitionToScene(scene, true);
+	SetCurrentScene(scene, true);
 	AddScene(obs_scene_get_source(scene));
 	obs_scene_release(scene);
 
@@ -523,7 +519,7 @@ void OBSBasic::Load(const char *file)
 	SetTransition(curTransition);
 
 	curScene = obs_get_source_by_name(sceneName);
-	TransitionToScene(curScene, true);
+	SetCurrentScene(curScene, true);
 	obs_source_release(curScene);
 
 	obs_data_array_release(sources);
@@ -1231,6 +1227,9 @@ OBSBasic::~OBSBasic()
 		}
 	}
 #endif
+
+	delete programOptions;
+	delete program;
 }
 
 void OBSBasic::SaveProjectNow()
@@ -1377,7 +1376,7 @@ void OBSBasic::AddScene(OBSSource source)
 		auto potential_source = static_cast<obs_source_t*>(data);
 		auto source = obs_source_get_ref(potential_source);
 		if (source && pressed)
-			main->TransitionToScene(source);
+			main->SetCurrentScene(source);
 		obs_source_release(source);
 	}, static_cast<obs_source_t*>(source));
 
@@ -1788,7 +1787,7 @@ void OBSBasic::DuplicateSelectedScene()
 				name.c_str(), OBS_SCENE_DUP_REFS);
 		source = obs_scene_get_source(scene);
 		AddScene(source);
-		TransitionToScene(source, true);
+		SetCurrentScene(source, true);
 		obs_scene_release(scene);
 		break;
 	}
@@ -2034,7 +2033,13 @@ void OBSBasic::RenderMain(void *data, uint32_t cx, uint32_t cy)
 
 	window->DrawBackdrop(float(ovi.base_width), float(ovi.base_height));
 
-	obs_render_main_view();
+	if (window->IsPreviewProgramMode()) {
+		OBSScene scene = window->GetCurrentScene();
+		obs_source_t *source = obs_scene_get_source(scene);
+		obs_source_video_render(source);
+	} else {
+		obs_render_main_view();
+	}
 	gs_load_vertexbuffer(nullptr);
 
 	/* --------------------------------------- */
@@ -2401,7 +2406,7 @@ void OBSBasic::on_scenes_currentItemChanged(QListWidgetItem *current,
 		source = obs_scene_get_source(scene);
 	}
 
-	TransitionToScene(source);
+	SetCurrentScene(source);
 
 	UNUSED_PARAMETER(prev);
 }
@@ -2526,7 +2531,7 @@ void OBSBasic::on_actionAddScene_triggered()
 		obs_scene_t *scene = obs_scene_create(name.c_str());
 		source = obs_scene_get_source(scene);
 		AddScene(source);
-		TransitionToScene(source);
+		SetCurrentScene(source);
 		obs_scene_release(scene);
 	}
 }

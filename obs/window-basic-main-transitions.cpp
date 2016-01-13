@@ -16,11 +16,13 @@
 ******************************************************************************/
 
 #include "window-basic-main.hpp"
+#include "display-helpers.hpp"
 #include "qt-wrappers.hpp"
 
 using namespace std;
 
 Q_DECLARE_METATYPE(OBSSource);
+Q_DECLARE_METATYPE(QuickTransition);
 
 void OBSBasic::InitDefaultTransitions()
 {
@@ -67,18 +69,31 @@ void OBSBasic::TransitionToScene(obs_scene_t *scene, bool force)
 	TransitionToScene(source, force);
 }
 
-void OBSBasic::TransitionToScene(obs_source_t *scene, bool force)
+void OBSBasic::TransitionToScene(obs_source_t *source, bool force)
 {
+	obs_scene_t *scene = obs_scene_from_source(source);
+	bool usingPreviewProgram = IsPreviewProgramMode();
+	if (!scene)
+		return;
+
+	if (usingPreviewProgram) {
+		scene = obs_scene_duplicate(scene, NULL,
+				OBS_SCENE_DUP_PRIVATE_REFS);
+		source = obs_scene_get_source(scene);
+	}
+
 	obs_source_t *transition = obs_get_output_source(0);
 
 	if (force)
-		obs_transition_set(transition, scene);
+		obs_transition_set(transition, source);
 	else
 		obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO,
-				ui->transitionDuration->value(), scene);
+				ui->transitionDuration->value(), source);
 
-	UpdateSceneSelection(scene);
 	obs_source_release(transition);
+
+	if (usingPreviewProgram)
+		obs_scene_release(scene);
 }
 
 static inline void SetComboTransition(QComboBox *combo, obs_source_t *tr)
@@ -124,4 +139,165 @@ void OBSBasic::on_transitions_currentIndexChanged(int)
 void OBSBasic::on_transitionProps_clicked()
 {
 	// TODO
+}
+
+void OBSBasic::SetQuickTransition(int idx)
+{
+}
+
+void OBSBasic::SetCurrentScene(obs_scene_t *scene, bool force)
+{
+	obs_source_t *source = obs_scene_get_source(scene);
+	SetCurrentScene(source, force);
+}
+
+void OBSBasic::SetCurrentScene(obs_source_t *scene, bool force)
+{
+	if (!IsPreviewProgramMode())
+		TransitionToScene(scene, force);
+
+	UpdateSceneSelection(scene);
+}
+
+void OBSBasic::CreateProgramDisplay()
+{
+	program = new OBSQTDisplay();
+
+	auto displayResize = [this]() {
+		struct obs_video_info ovi;
+
+		if (obs_get_video_info(&ovi))
+			ResizeProgram(ovi.base_width, ovi.base_height);
+	};
+
+	connect(program, &OBSQTDisplay::DisplayResized,
+			displayResize);
+
+	auto addDisplay = [this] (OBSQTDisplay *window)
+	{
+		obs_display_add_draw_callback(window->GetDisplay(),
+				OBSBasic::RenderProgram, this);
+
+		struct obs_video_info ovi;
+		if (obs_get_video_info(&ovi))
+			ResizeProgram(ovi.base_width, ovi.base_height);
+	};
+
+	connect(program, &OBSQTDisplay::DisplayCreated, addDisplay);
+
+	program->setSizePolicy(QSizePolicy::Expanding,
+			QSizePolicy::Expanding);
+}
+
+void OBSBasic::CreateProgramOptions()
+{
+	programOptions = new QWidget();
+	QVBoxLayout *layout = new QVBoxLayout(programOptions);
+	layout->setSpacing(4);
+
+	QPushButton *transitionButton = new QPushButton(QTStr("Transitions"),
+			programOptions);
+	QHBoxLayout *quickTransitions = new QHBoxLayout(programOptions);
+	quickTransitions->setSpacing(2);
+
+	QPushButton *addQuickTransition = new QPushButton(programOptions);
+	addQuickTransition->setMaximumSize(22, 22);
+	addQuickTransition->setProperty("themeID", "addIconSmall");
+	addQuickTransition->setFlat(true);
+
+	QLabel *quickTransitionsLabel = new QLabel(QTStr("QuickTransitions"),
+			programOptions);
+
+	quickTransitions->addWidget(quickTransitionsLabel);
+	quickTransitions->addWidget(addQuickTransition);
+
+	layout->addStretch(0);
+	layout->addWidget(transitionButton);
+	layout->addLayout(quickTransitions);
+	layout->addStretch(0);
+
+	programOptions->setLayout(layout);
+
+	auto transitionClicked = [this] () {
+		TransitionToScene(GetCurrentScene());
+	};
+
+	connect(transitionButton, &QAbstractButton::clicked, transitionClicked);
+}
+
+void OBSBasic::on_modeSwitch_clicked()
+{
+	os_atomic_set_bool(&previewProgramMode, !IsPreviewProgramMode());
+
+	if (IsPreviewProgramMode()) {
+		CreateProgramDisplay();
+		CreateProgramOptions();
+
+		obs_scene_t *dup = obs_scene_duplicate(GetCurrentScene(),
+				NULL, OBS_SCENE_DUP_PRIVATE_REFS);
+
+		obs_source_t *transition = obs_get_output_source(0);
+		obs_source_t *dup_source = obs_scene_get_source(dup);
+		obs_transition_set(transition, dup_source);
+		obs_source_release(transition);
+		obs_scene_release(dup);
+
+		ui->previewLayout->addWidget(programOptions);
+		ui->previewLayout->addWidget(program);
+		program->show();
+	} else {
+		TransitionToScene(GetCurrentScene(), true);
+
+		delete programOptions;
+		delete program;
+	}
+}
+
+void OBSBasic::RenderProgram(void *data, uint32_t cx, uint32_t cy)
+{
+	OBSBasic *window = static_cast<OBSBasic*>(data);
+	obs_video_info ovi;
+
+	obs_get_video_info(&ovi);
+
+	window->programCX = int(window->programScale * float(ovi.base_width));
+	window->programCY = int(window->programScale * float(ovi.base_height));
+
+	gs_viewport_push();
+	gs_projection_push();
+
+	/* --------------------------------------- */
+
+	gs_ortho(0.0f, float(ovi.base_width), 0.0f, float(ovi.base_height),
+			-100.0f, 100.0f);
+	gs_set_viewport(window->programX, window->programY,
+			window->programCX, window->programCY);
+
+	window->DrawBackdrop(float(ovi.base_width), float(ovi.base_height));
+
+	obs_render_main_view();
+	gs_load_vertexbuffer(nullptr);
+
+	/* --------------------------------------- */
+
+	gs_projection_pop();
+	gs_viewport_pop();
+
+	UNUSED_PARAMETER(cx);
+	UNUSED_PARAMETER(cy);
+}
+
+void OBSBasic::ResizeProgram(uint32_t cx, uint32_t cy)
+{
+	QSize targetSize;
+
+	/* resize program panel to fix to the top section of the window */
+	targetSize = GetPixelSize(program);
+	GetScaleAndCenterPos(int(cx), int(cy),
+			targetSize.width()  - PREVIEW_EDGE_SIZE * 2,
+			targetSize.height() - PREVIEW_EDGE_SIZE * 2,
+			programX, programY, programScale);
+
+	programX += float(PREVIEW_EDGE_SIZE);
+	programY += float(PREVIEW_EDGE_SIZE);
 }
