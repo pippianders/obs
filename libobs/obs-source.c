@@ -343,6 +343,47 @@ obs_source_t *obs_source_create_private(const char *id, const char *name,
 	return obs_source_create_internal(id, name, settings, NULL, true);
 }
 
+static void duplicate_filters(obs_source_t *dst, obs_source_t *src,
+		bool private)
+{
+	for (size_t i = src->filters.num; i > 0; i--) {
+		obs_source_t *src_filter = src->filters.array[i];
+		obs_source_t *dst_filter = obs_source_duplicate(src_filter,
+				src_filter->context.name, false);
+
+		obs_source_filter_add(dst, dst_filter);
+		obs_source_release(dst_filter);
+	}
+}
+
+obs_source_t *obs_source_duplicate(obs_source_t *source,
+		const char *new_name, bool create_private)
+{
+	obs_source_t *new_source;
+	obs_data_t *settings;
+
+	if (!obs_source_valid(source, "obs_source_duplicate"))
+		return NULL;
+
+	if ((source->info.output_flags & OBS_SOURCE_DO_NOT_DUPLICATE) != 0) {
+		obs_source_addref(source);
+		return source;
+	}
+
+	settings = obs_data_create();
+	obs_data_apply(settings, source->context.settings);
+
+	new_source = create_private ?
+		obs_source_create_private(source->info.id, new_name, settings) :
+		obs_source_create(source->info.id, new_name, settings, NULL);
+
+	if (source->info.type != OBS_SOURCE_TYPE_FILTER)
+		duplicate_filters(new_source, source, create_private);
+
+	obs_data_release(settings);
+	return new_source;
+}
+
 void obs_source_frame_init(struct obs_source_frame *frame,
 		enum video_format format, uint32_t width, uint32_t height)
 {
