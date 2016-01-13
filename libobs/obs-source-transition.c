@@ -396,6 +396,7 @@ void obs_transition_set(obs_source_t *transition, obs_source_t *source)
 		transition->transition_sources[i] = NULL;
 		transition->transition_source_active[i] = false;
 	}
+	transition->transition_source_active[0] = true;
 	transition->transition_sources[0] = source;
 	transition->transitioning_video = false;
 	transition->transitioning_audio = false;
@@ -406,6 +407,9 @@ void obs_transition_set(obs_source_t *transition, obs_source_t *source)
 			obs_source_remove_active_child(transition, s[i]);
 		obs_source_release(s[i]);
 	}
+
+	if (source)
+		obs_source_add_active_child(transition, source);
 }
 
 static float calc_time(obs_source_t *transition, uint64_t ts)
